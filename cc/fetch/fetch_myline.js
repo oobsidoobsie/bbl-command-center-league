@@ -2,7 +2,7 @@
 // for the pre-lock lineup check (cc/lineup_check.py). JSON list of players:
 //   n name, sec A (active) / R (reserve) / I (injured reserve), pos CBS eligibility, nba team,
 //   tip (game start, Unix seconds; 0 = no game that day), inj (CBS injury note, e.g. "Hamstring: Expected to be out until at least Nov 13"),
-//   out (true when CBS's injury icon is the red cross: ruled out)
+//   out (true when the note rules him out; CBS shows its red cross on Game Time Decisions too, so this reads the note)
 const page = async (u) => new DOMParser().parseFromString(await (await fetch(u, {credentials: 'include'})).text(), 'text/html');
 const home = await page('/teams');
 const want = '__TEAM__'.toLowerCase();
@@ -28,7 +28,8 @@ for (const tr of d.querySelectorAll('tr.playerRow')) {
   const sc = [...tr.querySelectorAll('script')].map(s => s.textContent).join(' ');
   const m = sc.match(/formatTime\([^,]+,\s*(\d{9,})/);
   const ij = tr.querySelector('a[subtab="Injury Report"]');
+  const note = ij ? (ij.closest('[title]') || {}).title || '' : '';
   out.push({n: a.textContent.trim(), sec: tr.classList.contains('benchPlayer') ? (sec === 'A' ? 'R' : sec) : sec, pos: pos || '', nba: nba || '',
-            tip: m ? +m[1] : 0, inj: ij ? (ij.closest('[title]') || {}).title || '' : '', out: !!(ij && ij.querySelector('.icon-red_cross'))});
+            tip: m ? +m[1] : 0, inj: note, out: !!note && !/game time decision/i.test(note)});
 }
 JSON.stringify(out)
