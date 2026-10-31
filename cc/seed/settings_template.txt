@@ -1,0 +1,7 @@
+# This team's settings. Format: key|player|value (one per line). All optional.
+# stream|Player Name|1      the roster spot pickups and streams are measured against (default: your least valuable player)
+# keep|Player Name|1        never suggest dropping him
+# notrade|Player Name|1     never put him in a trade package
+# proj|Player Name|24       override CBS's fantasy points per game for him
+# out_until|Player Name|2026-11-04   he can't play before this date (injury)
+# target|Player Name|1      always include him on the Trades tab's target watch

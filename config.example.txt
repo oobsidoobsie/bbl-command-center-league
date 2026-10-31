@@ -1,0 +1,24 @@
+# BBL Command Center settings (edit with Notepad). Your team comes from your CBS sign-in, so it isn't set here.
+
+# Email the reports (daily report, Monday 2-for-1). yes / no
+email=no
+email_to=
+# The Gmail account that sends them. Its app password goes in secret.txt (see README), never here.
+gmail_address=
+
+# Windows notification when the nightly run finishes. yes / no
+notify=yes
+# Pre-lock lineup check: about an hour before lineups lock, a notification (and an email when email=yes) if your CBS lineup
+# can be better (a starter with no game or ruled out, or a reserve who projects more). Scheduled by "4 - Schedule nightly". yes / no
+lineup_check=yes
+# Open the Command Center in your browser when the run finishes (in its own window, with an editable watchlist). yes / no
+open_page=no
+# The local address the Command Center opens at: http://127.0.0.1:<page_port>. Change it only if another program uses it.
+page_port=8765
+
+# The browser that reads CBS: no = hidden (normal), offscreen = a real window kept off-screen
+# (try this if CBS stops working while hidden), yes = visible
+show_browser=no
+
+# Time the nightly report runs on this PC. Change it by running "4 - Schedule nightly" (it saves the new time here).
+run_time=11:25 PM

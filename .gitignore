@@ -1,0 +1,15 @@
+.venv/
+data/
+output/
+secret.txt
+BBL Command Center.html
+__pycache__/
+.DS_Store
+
+managers/
+Teams/
+Share/
+config.txt
+CLAUDE.md
+PROJECT_CONTEXT.md
+.claude/agents/
