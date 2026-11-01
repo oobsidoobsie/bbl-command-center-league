@@ -411,6 +411,8 @@ for l in open('pool.txt',encoding='utf-8'):
     if q[0]=='#STATUS' and len(q)>=5:
         _NST.setdefault(q[1],{})[_nk(q[3])]=(MEN if q[2]==MEN else q[2],q[3])
         if q[4]=='ACTIVE': _NSA.setdefault(q[1],set()).add(_nk(q[3]))
+PASTME={}   # date -> (your players with their actual slot values, the ACTIVE ones): finished nights, for Season → Lineup grid
+ACTIVE={}   # (date, team) -> points from that night's ACTIVE players, what really counts; in-progress nights too
 BENCH={}   # (date, team) -> (best possible, active lineup, [(benched player, his points)]): finished nights with saved lineups
 for _bf in sorted(glob.glob('box_*.txt')):
     _d=os.path.basename(_bf)[4:12]
@@ -438,10 +440,12 @@ for _bf in sorted(glob.glob('box_*.txt')):
         sl={k:fp+{'G':reb,'F':ast,'C':tpm}[k] for k in INFO.get(q[0],{'pos':''})['pos'].split(',') if k in ('G','F','C')} or {'F':fp}
         _tp[_t].append((q[0],sl))
     for t_,pl_ in _tp.items():
+        if _d in _NST: ACTIVE[(_d,t_)]=best([x for x in pl_ if _nk(x[0]) in _NSA.get(_d,())],False)
         if _fin>=_all and _d in _NST:   # points left on the bench: the active players' best lineup vs everyone's
             _ac=[x for x in pl_ if _nk(x[0]) in _NSA.get(_d,())]
             _bn=sorted(((n_,max(s_.values())) for n_,s_ in pl_ if _nk(n_) not in _NSA.get(_d,())),key=lambda x:-x[1])
             BENCH[(_d,t_)]=(best(pl_,False),best(_ac,False),_bn)
+            if t_==MEN: PASTME[_d]=(pl_,_ac)
         if (_d,t_) in SCORES: continue   # saved already (a missing team-night is filled in)
         SCORES[(_d,t_)]=best(pl_,False)
         if _fin>=_all: _newsc.append((_d,t_,SCORES[(_d,t_)]))   # saved once every game is final; until then worked out each run
@@ -450,6 +454,8 @@ if _newsc:
         for r in _newsc: _fh.write(f'S|{r[0]}|{r[1]}|{r[2]:g}\n')
 SCD={dt.datetime.strptime(k[0],'%Y%m%d').date() for k in SCORES}   # nights with actual scores
 def done(team,p): return sum(v for (d,t),v in SCORES.items() if t==team and period(dt.datetime.strptime(d,'%Y%m%d').date())==p)
+def scored(team,p):   # the period's real score so far: active players where that night's lineups are saved
+    return sum(ACTIVE.get((d,t),v) for (d,t),v in SCORES.items() if t==team and period(dt.datetime.strptime(d,'%Y%m%d').date())==p)
 def projleft(r,p): return sum(best(avail(r,d)) for d in P.get(p,[]) if d not in SCD)
 def wlbox(it):   # a period's watchlist gains [(short name, "pos · team", gain)], best first: one line, tap to see all
     if not it: return '<div class="wl"><span class="wlh">Watchlist</span><div class="muted">No gain this period</div></div>'
@@ -486,7 +492,7 @@ for p in PER:
             of=sum(min(len(avail(OTH[key],d)),5) for d in ds)
             cls='better' if filled>of else ('worse' if filled<of else 'even')
             oslot=f'<div class="oslot {cls}">Opp slots {of}/{5*len(ds)} · you {filled-of:+d} vs them</div>'
-            sm=done(MEN,p); so=done(key,p)
+            sm=scored(MEN,p); so=scored(key,p)
             mine_p=projme(p)+sm; opp_p=projleft(OTH[key],p)+so
             sdd=0.11*math.sqrt(mine_p**2+opp_p**2) or 1
             wp=0.5*(1+math.erf((mine_p-opp_p)/(sdd*math.sqrt(2))))
@@ -1516,6 +1522,7 @@ if MT:
 # ---- Standings & playoff odds (top of the Playoffs tab): finished periods from actual scores (your CBS results.txt; other
 # teams: their ACTIVE players' points, BENCH), this period = scored so far + the side-prize simulation's remaining days, then
 # 8 of 10 seeded (win %, division record, total points) and the bracket played out (1v8, 4v5, 2v7, 3v6, no reseeding).
+POLIKE={22:defaultdict(int),23:defaultdict(int),24:defaultdict(int)}   # team -> simulated seasons you meet it in that round
 def _build_odds():
     global oddsec
     oddsec=''
@@ -1560,6 +1567,12 @@ def _build_odds():
             a_=PP[i,rd]*(1+0.11*rng2.standard_normal()); b_=PP[j,rd]*(1+0.11*rng2.standard_normal()); return i if a_>=b_ else j
         q=[play(bys[0],bys[7],0),play(bys[3],bys[4],0),play(bys[1],bys[6],0),play(bys[2],bys[5],0)]
         f1,f2=play(q[0],q[1],1),play(q[2],q[3],1); final[f1]+=1; final[f2]+=1; champ[play(f1,f2,2)]+=1
+        if ME in teams and teams.index(ME) in bys[:8]:
+            mi_=teams.index(ME); pos_=list(bys[:8]).index(mi_); pr_=[(0,7),(3,4),(1,6),(2,5)]; g_=next(i_ for i_,x_ in enumerate(pr_) if pos_ in x_)
+            POLIKE[22][teams[bys[pr_[g_][0] if pr_[g_][1]==pos_ else pr_[g_][1]]]]+=1
+            if q[g_]==mi_:
+                POLIKE[23][teams[q[g_^1]]]+=1
+                if (f1 if g_<2 else f2)==mi_: POLIKE[24][teams[f2 if g_<2 else f1]]+=1
     pc=lambda x:'<0.1%' if 0<x<0.001 else ('—' if x==0 else f'{x*100:.0f}%' if x>=0.995 or x>=0.1 else f'{x*100:.1f}%')
     rows=[]
     for i,t in enumerate(teams):
@@ -2138,7 +2151,7 @@ function sub(id){var x=document.querySelector('.subtabs button[data-s='+id+']');
 [].forEach.call(document.querySelectorAll('.subtabs button'),function(x){x.addEventListener('click',function(){sub(x.dataset.s)})});
 [].forEach.call(document.querySelectorAll('.subtabs'),function(n){try{var ss=localStorage.getItem('bblsub-'+n.dataset.g);if(ss&&n.querySelector('button[data-s='+ss+']'))sub(ss)}catch(e){}});
 window.__sub=sub;
-var R={draft:['season','sdraft'],reports:['season','srep'],matchups:['season','smu'],prizes:['season','sprz'],pickups:['waivers','wpick'],bestadds:['waivers','wpick'],adds:['waivers','wpick'],watch:['waivers','wwatch'],watchlist:['waivers','wwatch'],rivals:['waivers','wriv'],twoforone:['trades',''],stash:['trades',''],ttargets:['trades',''],breakouts:['waivers','wpick'],matchup:['period','pmu'],startsit:['period','pmu'],roster:['period','prost'],top150:['season','stop'],h2h:['season','smu'],streaming:['waivers','wstr'],stream:['waivers','wstr']};if(R[h]){show(R[h][0]);if(R[h][1])sub(R[h][1]);var el=document.getElementById(h);if(el){if(el.tagName==='DETAILS')el.open=true;setTimeout(function(){el.scrollIntoView({block:'start'})},60)}}else if(st==='pickups'||st==='watch'){show('waivers')}else if(h&&document.querySelector('.tabs button[data-t="'+h+'"]'))show(h);else if(st&&document.querySelector('.tabs button[data-t="'+st+'"]'))show(st);})();
+var R={seasongrid:['season','slg'],pogrid:['playoffs','pfgrid'],poplan:['playoffs','pfplan'],draft:['season','sdraft'],reports:['season','srep'],matchups:['season','smu'],prizes:['season','sprz'],pickups:['waivers','wpick'],bestadds:['waivers','wpick'],adds:['waivers','wpick'],watch:['waivers','wwatch'],watchlist:['waivers','wwatch'],rivals:['waivers','wriv'],twoforone:['trades',''],stash:['trades',''],ttargets:['trades',''],breakouts:['waivers','wpick'],matchup:['period','pmu'],startsit:['period','pmu'],roster:['period','prost'],top150:['season','stop'],h2h:['season','smu'],streaming:['waivers','wstr'],stream:['waivers','wstr']};if(R[h]){show(R[h][0]);if(R[h][1])sub(R[h][1]);var el=document.getElementById(h);if(el){if(el.tagName==='DETAILS')el.open=true;setTimeout(function(){el.scrollIntoView({block:'start'})},60)}}else if(st==='pickups'||st==='watch'){show('waivers')}else if(h&&document.querySelector('.tabs button[data-t="'+h+'"]'))show(h);else if(st&&document.querySelector('.tabs button[data-t="'+st+'"]'))show(st);})();
 </script>"""
 # ---- Playoffs tab: schedule strength P22–P24, the field, player games, targets and league playoff rules
 POP=[22,23,24]; RND={22:'Quarterfinal',23:'Semifinal',24:'Final · 3rd-place game'}
@@ -2260,12 +2273,264 @@ def _build_poplan():
             'Games = his games in P22-P23-P24. Reg. season = what the same swap made today does to your lineups P'+str(REG[0] if REG else 21)+'–P21. IR players out into the playoffs and your no-trade list (for trades) are left out.</p></section>'
             '<style>.pptab .pos{color:var(--ok)}.pptab .neg{color:var(--bad)}.pptab td:nth-child(2){min-width:220px}</style>')
 _build_poplan()
+# ---- Playoff lineup grid (Playoffs → Lineup grid): each day of P22–P24, who starts in each slot (same best lineup as
+# best()) and who's on the bench, with a check that G, F, C + 2 Util are filled. Uses RON(d), so IR returns count. All worked
+# out again in the browser (POGJS): roster moves, a ranking of who fills the empty slots, dragging, locks and sits, back-to-back
+# rest risk, each round's opponent day by day and bench points (the playoff tiebreak). Saved in localStorage.
+def IRON(n,d): return INFO[n]['sec']=='I' and (n not in out or d<out[n])   # on IR that day: until his out-until date; with no date, until CBS says he's off it
+def GRON(d):   # the grids' roster on day d: RON(d) without IR players; a player only makes room for an IR return that has a date
+    return {n:v for n,v in R.items() if not IRON(n,d) and not (n in IRDROP and d>=IRDROP[n][0] and IRDROP[n][1] in out)}
+def irlist(d): return sorted((n for n in R if IRON(n,d)),key=lambda n:-INFO[n]['best'])
+def irback(n): return out[n].strftime('%b %-d') if n in out else ''
+def _polineup(pl):   # the lineup behind best(): ({'G':(name,value),...}, ['Util' players as (name,value)], points)
+    n=len(pl); vals=[s for _,s in pl]; top=[max(s.values()) for s in vals]
+    order=sorted(range(n),key=top.__getitem__,reverse=True)
+    bv,bp,bR,br=0,(),(),[]
+    for Rr in reversed(_COVER):   # a tie goes to the lineup that fills more of G/F/C, so a slot isn't shown empty for nothing
+        cand=[[i for i in range(n) if r in vals[i]] for r in Rr]
+        for pick in itertools.product(*cand):
+            if len(set(pick))<len(pick): continue
+            rest=[i for i in order if i not in pick][:2]
+            v=sum(vals[i][r] for i,r in zip(pick,Rr))+sum(top[i] for i in rest if top[i]>0)
+            if v>bv+1e-9: bv,bp,bR,br=v,pick,Rr,[i for i in rest if top[i]>0]
+    return {r:(pl[i][0],vals[i][r]) for i,r in zip(bp,bR)},[(pl[i][0],top[i]) for i in br],bv
+POGJS=r'''<script>window.__pogInit=function(appId,D){var app=document.getElementById(appId);if(!app)return;
+var KEY=(D.reg?"bbl-pgr-":"bbl-pog-")+D.me,RW=D.reg?"period":"round",PI=D.cur||0,SCR=1,SL=["G","F","C","U0","U1"],GFC=["G","F","C"],COVER=[["G","F","C"],["F","C"],["G","C"],["G","F"],["C"],["F"],["G"],[]];
+var DAY={},DAYS=[],SEL=null,DRAG=null,DROPPED=0,S={days:{},moves:[],opp:{},drop:""},NM={},ST={},BEST={},BASE={},RISK={},TOUCH=window.matchMedia&&matchMedia("(hover: none)").matches;
+D.rounds.forEach(function(r){r.days.forEach(function(x){DAY[x.k]=x})});
+function rds(){return D.reg?[D.rounds[PI]]:D.rounds}
+function setDays(){DAYS=[];rds().forEach(function(r){r.days.forEach(function(x){DAYS.push(x)})})}setDays();
+function esc(t){var d=document.createElement("div");d.textContent=t;return d.innerHTML}
+function can(n,k){return k==="B"||k[0]==="U"||D.pl[n].s[k]!=null}
+// matchup multiplier for one player on one day (regular season, where the schedule of opponents is loaded); 1 otherwise
+function mul(n,x){if(!x||!x.op)return 1;var c=x.mc||(x.mc={});if(c[n]!=null)return c[n];var p=D.pl[n],o=x.op[p.t],v=1,dm=o&&D.dm[o[0]];if(dm){v=0;p.gr.forEach(function(g){v+=dm[g]});v/=p.gr.length}return c[n]=v}
+function tv(n,x){return D.pl[n].top*mul(n,x)}
+function val(n,k,x){return (k[0]==="U"||k==="B"?D.pl[n].top:D.pl[n].s[k])*mul(n,x)}
+function gm(n){var p=D.pl[n];return p.g||(D.tg&&D.tg[p.t])||[]}
+function lab(k){return k[0]==="U"?"Util":k}
+function join(l){return l.length<2?l.join(""):l.slice(0,-1).join(", ")+" and "+l[l.length-1]}
+function live(x){return x.games&&!x.past}
+function pts(a,x){if(x&&x.pa)return x.pa.pts;return SL.reduce(function(t,k){return t+(a[k]?val(a[k],k,x):0)},0)}
+function used(a){return SL.filter(function(k){return a[k]}).length}
+function sgn(v){return v>0?"+"+v.toLocaleString():v<0?"−"+Math.abs(v).toLocaleString():"0"}
+function phi(z){var t=1/(1+.2316419*Math.abs(z)),d=.3989423*Math.exp(-z*z/2),p=d*t*(.3193815+t*(-.3565638+t*(1.781478+t*(-1.821256+t*1.330274))));return z>0?1-p:p}
+function ds(k){return S.days[k]||(S.days[k]={pin:{},sit:[]})}
+// the same lineup as the page's best(): distinct players cover some of G/F/C, the next best take the Util slots. Pinned slots stay as they are.
+function solve(names,pin,x){pin=pin||{};var a={},got={};SL.forEach(function(k){if(k in pin){a[k]=pin[k]||null;if(pin[k])got[pin[k]]=1}else a[k]=null});
+var pl=names.filter(function(n){return !got[n]}),uf=["U0","U1"].filter(function(k){return !(k in pin)}),bv=-1,bp=null,bs=null,br=null;
+COVER.forEach(function(R){if(R.some(function(k){return k in pin}))return;var pick=[];(function go(i,v){if(i===R.length){var rest=[],t=v;for(var j=0;j<pl.length&&rest.length<uf.length;j++)if(pick.indexOf(pl[j])<0&&D.pl[pl[j]].top>0){rest.push(pl[j]);t+=tv(pl[j],x)}if(t>bv+1e-9){bv=t;bp=pick.slice();bs=R;br=rest}return}
+pl.forEach(function(n){var q=D.pl[n].s[R[i]];if(q==null||pick.indexOf(n)>=0)return;pick.push(n);go(i+1,v+q*mul(n,x));pick.pop()})})(0,0)});
+if(bs){bs.forEach(function(k,i){a[k]=bp[i]});br.forEach(function(n,i){a[uf[i]]=n})}return a}
+function rosterOn(x){var drop={},l;if(!live(x))return x.all;S.moves.forEach(function(m){if(m.d)drop[m.d]=1});l=x.all.filter(function(n){return !drop[n]});S.moves.forEach(function(m){if(m.a&&D.pl[m.a]&&gm(m.a).indexOf(x.i)>=0&&l.indexOf(m.a)<0)l.push(m.a)});return l.slice().sort(function(a,b){return tv(b,x)-tv(a,x)})}
+function goodPin(x,names,sit){var p=(S.days[x.k]||{}).pin||{},o={},seen={};Object.keys(p).forEach(function(k){var n=p[k];if(n===null){o[k]=null;return}if(names.indexOf(n)>=0&&sit.indexOf(n)<0&&can(n,k)&&!seen[n]){o[k]=n;seen[n]=1}});return o}
+function calc(x){var names=NM[x.k]=rosterOn(x),s=((S.days[x.k]||{}).sit||[]).filter(function(n){return names.indexOf(n)>=0}),free=names.filter(function(n){return s.indexOf(n)<0}),pin=goodPin(x,names,s);
+ST[x.k]=live(x)?solve(free,pin,x):x.auto;BEST[x.k]=live(x)?solve(names,null,x):x.auto;
+var pr={};Object.keys(pin).forEach(function(k){if(!pin[k]||x.b2b.indexOf(pin[k])<0)pr[k]=pin[k]});RISK[x.k]=live(x)?pts(ST[x.k],x)-pts(solve(free.filter(function(n){return x.b2b.indexOf(n)<0}),pr,x),x):0}
+function calcAll(){DAYS.forEach(calc);Object.keys(S.days).forEach(function(k){if(DAY[k]&&DAYS.indexOf(DAY[k])<0)calc(DAY[k])})}
+function sitting(x){return ((S.days[x.k]||{}).sit||[]).filter(function(n){return NM[x.k].indexOf(n)>=0})}
+function bench(x){var a=ST[x.k],s=sitting(x);return NM[x.k].filter(function(n){return s.indexOf(n)<0&&!SL.some(function(k){return a[k]===n})})}
+function edited(x){var d=S.days[x.k];return !!d&&(Object.keys(d.pin||{}).length>0||sitting(x).length>0)}
+try{var sv=JSON.parse(localStorage.getItem(KEY)||"{}");if(sv.v===2){S.days=sv.days||{};S.moves=(sv.moves||[]).filter(function(m){return (!m.a||(D.pl[m.a]&&D.pl[m.a].own))&&(!m.d||D.ros.indexOf(m.d)>=0)});S.opp=sv.opp||{};S.drop=sv.drop||""}}catch(e){}
+Object.keys(S.days).forEach(function(k){var x=DAY[k],d=S.days[k];if(!x||!live(x)){delete S.days[k];return}d.pin=d.pin||{};d.sit=d.sit||[]});
+S.moves.length||S.moves.push({a:"",d:""});if(S.drop&&D.pl[S.drop]==null)S.drop="";
+calcAll();
+Object.keys(S.days).forEach(function(k){var x=DAY[k],d=S.days[k],p=goodPin(x,NM[k],d.sit);if(Object.keys(p).length<Object.keys(d.pin).length){DROPPED++;d.pin=p}});
+function save(){try{var o={};Object.keys(S.days).forEach(function(k){if(edited(DAY[k]))o[k]=S.days[k]});localStorage.setItem(KEY,JSON.stringify({v:2,days:o,moves:S.moves.filter(function(m){return m.a||m.d}),opp:S.opp,drop:S.drop}))}catch(e){}}
+// ---- what's wrong with one day's lineup, in words; free agents who'd help are from the last nightly read
+function warn(x){var a=ST[x.k],e=SL.filter(function(k){return !a[k]}),u=5-e.length,c=e.length,sl=c+" slot"+(c!==1?"s are":" is"),b=bench(x),st=sitting(x),free=NM[x.k].filter(function(n){return st.indexOf(n)<0}),fu=used(solve(free,null,x)),m,f=[];if(!c)return "";
+var gfc=e.filter(function(k){return k[0]!=="U"});
+if(u<fu){var more=fu-u;m=sl+" open, but your players can fill "+(c===1?"it":c===more?"them":more+" of them")+". Move a bench player in, or reset this day."}
+else if(!b.length){m="Only "+free.length+" of your players play"+(st.length?", with "+esc(join(st))+" sitting":"")+", so "+sl+" empty.";f=x.fa.a||[]}
+else{m="No "+join(gfc)+": "+free.length+" of your players play, but only "+u+" fit the lineup, so "+sl+" empty.";gfc.forEach(function(k){(x.fa[k]||[]).forEach(function(n){if(f.indexOf(n)<0)f.push(n)})})}
+f=f.filter(function(n){return NM[x.k].indexOf(n)<0}).slice(0,2);
+return "<li><b>"+esc(x.long)+":</b> "+m+(f.length?" On today&#39;s wire, these play that day: "+f.map(function(n){var p=D.pl[n];return '<b class="pcn">'+esc(n)+"</b> ("+esc(p.pos)+" · "+esc(p.t)+" · "+tv(n,x).toFixed(1)+")"}).join(", ")+".":"")+"</li>"}
+function btn(a,x,n,k,on,txt,ti){return '<button type="button" class="pogi'+(on?" on":"")+'" data-a="'+a+'" data-d="'+x.k+'" data-n="'+esc(n||"")+'" data-k="'+(k||"")+'" title="'+ti+'" aria-label="'+ti+'">'+txt+"</button>"}
+function cell(x,n,k){var p=D.pl[n],b=x.b2b.indexOf(n)>=0?' <span class="pogb" title="2nd night of a back-to-back: he may rest">B2B</span>':"",go=live(x),pin=(S.days[x.k]||{}).pin||{},lk=k!=="B"&&pin[k]===n,nw=S.moves.some(function(m){return m.a===n}),o=x.op&&x.op[p.t],mm=mul(n,x),ol=o?'<div class="pogm">'+(o[1]?"vs ":"@ ")+esc(o[0])+(mm>=1.04?' <span class="pogpos">▲ +'+Math.round(100*(mm-1))+"%</span>":mm<=.96?' <span class="pogneg">▼ −'+Math.round(100*(1-mm))+"%</span>":"")+"</div>":"";
+return '<td class="pogp'+(x.past?" pogpast":"")+(nw?" pognew":"")+'" style="--tc:'+p.c+'"'+(go?' draggable="true" tabindex="0" role="button" data-d="'+x.k+'" data-k="'+k+'" data-n="'+esc(n)+'" aria-label="'+esc(n)+", "+(k==="B"?"bench":lab(k))+", "+esc(x.long)+'"':"")+">"+(go?'<span class="pogic">'+(k!=="B"?btn("lock",x,n,k,lk,lk?"🔒":"🔓",lk?"Unlock this slot":"Lock him in this slot"):"")+btn("sit",x,n,k,false,"🚫","Sit him this day")+"</span>":"")+'<b class="pcn">'+esc(n)+'</b><div class="pogm"><span class="nbat sm" data-t="'+esc(p.t)+'">'+esc(p.t)+"</span> "+esc(p.pos)+" · "+val(n,k,x).toFixed(1)+b+(nw?' <span class="pogb nw">NEW</span>':"")+"</div>"+ol+"</td>"}
+function satCell(x,n){var p=D.pl[n];return '<td class="pogp pogsat" style="--tc:'+p.c+'"><span class="pogic">'+btn("unsit",x,n,"",true,"↩","Put him back in the lineup choice")+'</span><b class="pcn">'+esc(n)+'</b><div class="pogm">Sitting · '+tv(n,x).toFixed(1)+"</div></td>"}
+function pastCell(x,e){var m=D.pm[e[0]]||["","","#667085"];return '<td class="pogp pogpast" style="--tc:'+m[2]+'"><b class="pcn">'+esc(e[0])+'</b><div class="pogm">'+(m[0]?'<span class="nbat sm" data-t="'+esc(m[0])+'">'+esc(m[0])+"</span> ":"")+esc(m[1])+" · <b>"+e[1].toFixed(1)+"</b></div></td>"}
+function irOf(x){var dr={};if(!x.pa)S.moves.forEach(function(m){if(m.d)dr[m.d]=1});return (x.ir||[]).filter(function(n){return !dr[n]})}
+function irCell(x,n){var p=D.pl[n]||{},m=D.pm&&D.pm[n];return '<td class="pogp pogirc" style="--tc:'+(p.c||(m?m[2]:"#667085"))+'"><b class="pcn">'+esc(n)+'</b><div class="pogm">'+(p.t?'<span class="nbat sm" data-t="'+esc(p.t)+'">'+esc(p.t)+"</span> "+esc(p.pos):"")+'</div><div class="pogm">'+(x.past?"Out":p.ib?"IR · back "+esc(p.ib):"IR · no return date")+"</div></td>"}
+function benchPts(x){if(x.pa)return x.pa.bp;return bench(x).reduce(function(t,n){return t+tv(n,x)},0)}
+function oppOf(r){if(D.reg)return r.opp&&D.opp[r.opp]?r.opp:null;var o=S.opp[r.p];return o&&D.opp[o]?o:r.likely&&D.opp[r.likely]?r.likely:Object.keys(D.opp)[0]}
+function table(r,o){var ti,nb=0,h='<th class="pogs"></th>',OP=o?D.opp[o]:null;ti=-1;r.days.forEach(function(x,i){if(x.today)ti=i;nb=Math.max(nb,x.pa?x.pa.b.length:bench(x).length+sitting(x).length);var c=x.pa?Object.keys(x.pa.a).length:used(ST[x.k]),bn=bench(x).length,st=x.past?["past",x.games?"Final"+(x.pa&&!x.pa.nolu&&c<5?" · "+c+" of 5":""):"No NBA games"]:!x.games?["none","No NBA games"]:c<5?["bad","⚠ "+c+" of 5 filled"]:!bn?["warn","5 of 5 · no bench"]:["ok","✓ 5 of 5 · "+bn+" bench"];
+h+='<th class="pogd '+st[0]+(x.today?" pogtod":"")+'">'+esc(x.dow)+"<span>"+esc(x.date)+"</span><i>"+esc(st[1])+"</i>"+(live(x)&&edited(x)?'<button type="button" class="pogre" data-r="'+x.k+'" title="Clear your locks, sits and drags for this day">↺ Reset</button>':"")+"</th>"});
+var b='';SL.forEach(function(k){b+='<tr><th class="pogs">'+lab(k)+"</th>";r.days.forEach(function(x){if(x.pa){var pe=x.pa.a[k];b+=pe?pastCell(x,pe):x.games&&!x.pa.nolu?'<td class="pogx pogpast">Empty</td>':"<td></td>";return}var n=ST[x.k][k],pin=(S.days[x.k]||{}).pin||{};b+=n?cell(x,n,k):live(x)?'<td class="pogx" tabindex="0" role="button" data-d="'+x.k+'" data-k="'+k+'" aria-label="Empty '+lab(k)+" slot, "+esc(x.long)+'">'+(k in pin?'<span class="pogic">'+btn("lock",x,"",k,true,"🔒","Let the best lineup fill this slot")+"</span>":"")+"Empty</td>":"<td></td>"});b+="</tr>"});
+b+='<tr class="pogh"><th class="pogs">Bench</th>'+r.days.map(function(x){return live(x)?'<td class="pogbz" data-d="'+x.k+'" data-k="B"></td>':"<td></td>"}).join("")+"</tr>";
+for(var i=0;i<nb;i++){b+='<tr><th class="pogs"></th>';r.days.forEach(function(x){if(x.pa){b+=i<x.pa.b.length?pastCell(x,x.pa.b[i]):"<td></td>";return}var l=bench(x),s=sitting(x);b+=i<l.length?cell(x,l[i],"B"):i<l.length+s.length?satCell(x,s[i-l.length]):live(x)?'<td class="pogbz" data-d="'+x.k+'" data-k="B"></td>':"<td></td>"});b+="</tr>"}
+var nir=0;r.days.forEach(function(x){nir=Math.max(nir,irOf(x).length)});for(var q=0;q<nir;q++){b+='<tr'+(q?"":' class="pogh"')+'><th class="pogs">'+(q?"":"IR")+"</th>"+r.days.map(function(x){var l=irOf(x);return q<l.length?irCell(x,l[q]):"<td></td>"}).join("")+"</tr>"}
+b+='<tr class="pogt"><th class="pogs">Points</th>'+r.days.map(function(x){var v=pts(ST[x.k],x),d=Math.round(v-pts(BEST[x.k],x));return "<td><b>"+Math.round(v)+"</b>"+(d?' <span class="pogdl">'+sgn(d)+"</span>":"")+"</td>"}).join("")+"</tr>";
+b+='<tr class="pogf"><th class="pogs" title="Points from bench players, the tiebreak if a matchup is tied">Bench pts</th>'+r.days.map(function(x){return "<td>"+Math.round(benchPts(x))+"</td>"}).join("")+"</tr>";
+b+='<tr class="pogf"><th class="pogs" title="Lost if every player on the 2nd night of a back-to-back rests">B2B risk</th>'+r.days.map(function(x){var v=Math.round(RISK[x.k]);return "<td>"+(v?'<span class="pogneg">−'+v+"</span>":"—")+"</td>"}).join("")+"</tr>";
+if(OP){b+='<tr class="pogf pogf1"><th class="pogs" title="'+esc(OP.n)+': best lineup that day">Opp.</th>'+r.days.map(function(x){var q=OP.d[x.i];return "<td>"+Math.round(q[1])+(q[0]<5&&x.games?' <span class="pogneg">'+q[0]+" of 5</span>":"")+"</td>"}).join("")+"</tr>";
+b+='<tr class="pogf"><th class="pogs">Edge</th>'+r.days.map(function(x){var v=Math.round(pts(ST[x.k],x)-OP.d[x.i][1]);return '<td class="'+(v>0?"pogpos":v<0?"pogneg":"")+'">'+sgn(v)+"</td>"}).join("")+"</tr>"}
+var wd=D.reg?' style="min-width:'+(58+r.days.length*134)+"px;max-width:"+(58+r.days.length*210)+'px"':"";var tod=ti>=0?'<style>[data-rd="'+r.p+'"] .pogt1 tr>:nth-child('+(ti+2)+"):not(.pogbz){box-shadow:inset 2px 0 0 var(--accent),inset -2px 0 0 var(--accent)}</style>":"";return tod+'<div class="scroll"><table class="pogt1"'+wd+' data-xs><thead><tr>'+h+"</tr></thead><tbody>"+b+"</tbody></table></div>"}
+function vsLine(r,o,tp,bp){if(!o)return "";var OP=D.opp[o],ot=0,ob=0,sw=[],sm=0,so=0,anyLive=r.days.some(live);r.days.forEach(function(x){var q=OP.d[x.i];ot+=q[1];ob+=q[2];if(x.pa){sm+=x.pa.pts;so+=q[1]}if(live(x))sw.push([Math.round(pts(ST[x.k],x)-q[1]),x.date])});var sc=anyLive&&(sm||so),tt=tp,oo=ot;if(!anyLive)return '<div class="pogvs"><b>vs '+esc(OP.n)+"</b> <span>"+(r.res?"<b>"+esc(r.res[0])+"</b> "+Math.round(r.res[1]).toLocaleString()+" to "+Math.round(r.res[2]).toLocaleString()+" on CBS":"Final "+Math.round(tt).toLocaleString()+" to "+Math.round(oo).toLocaleString())+" · bench points <b>"+Math.round(bp).toLocaleString()+"</b> to "+Math.round(ob).toLocaleString()+"</span></div>";
+var win=phi((tt-oo)/Math.max(1,.11*Math.sqrt(tt*tt+oo*oo))),opts=Object.keys(D.opp).map(function(t){return '<option value="'+esc(t)+'"'+(t===o?" selected":"")+">"+esc(D.opp[t].n)+(t===r.likely?" (likely"+(r.lp?", "+r.lp+"%":"")+")":"")+"</option>"}).join("");
+sw.sort(function(a,b){return Math.abs(b[0])-Math.abs(a[0])});
+return '<div class="pogvs">'+(D.reg?"<b>vs "+esc(OP.n)+"</b>":'<label class="dropsel">Opponent <select class="pogopp" data-p="'+r.p+'">'+opts+"</select></label>")+" <span><b>"+Math.round(win*100)+"%</b> to win · "+Math.round(tt).toLocaleString()+" to "+Math.round(oo).toLocaleString()+(sc?" (scored so far "+Math.round(sm).toLocaleString()+" to "+Math.round(so).toLocaleString()+")":"")+" · bench points <b>"+Math.round(bp).toLocaleString()+"</b> to "+Math.round(ob).toLocaleString()+(bp<ob?' <span class="pogneg">(behind on the tiebreak)</span>':"")+(sw.length?" · biggest days: "+sw.slice(0,2).map(function(s){return esc(s[1])+" ("+sgn(s[0])+")"}).join(", "):"")+"</span></div>"}
+function render(){var te=0,ts=0,any=false;if(D.reg)[].forEach.call(app.querySelectorAll("[data-rd]"),function(b){b.hidden=+b.dataset.rd!==D.rounds[PI].p});rds().forEach(function(r){var box=app.querySelector('[data-rd="'+r.p+'"]'),em=0,bd=0,tp=0,ap=0,bp=0,rk=0,dn=0,nl=0,nob=[],wl="",o=oppOf(r);r.days.forEach(function(x){if(x.pa)dn+=x.pa.pts;if(live(x))nl++;tp+=pts(ST[x.k],x);ap+=pts(BEST[x.k],x);bp+=benchPts(x);rk+=RISK[x.k];if(!live(x))return;ts+=5;if(edited(x))any=true;var c=5-used(ST[x.k]);if(c){em+=c;bd++;wl+=warn(x)}else if(!bench(x).length){var lo=Math.min.apply(null,SL.map(function(k){return val(ST[x.k][k],k,x)}));nob.push(esc(x.long)+" (at least "+Math.round(lo)+")")}});te+=em;
+var dl=Math.round(tp-ap),sc=box.querySelector(".scroll"),left=sc?sc.scrollLeft:0,fo=document.activeElement&&document.activeElement.classList.contains("pogopp")?document.activeElement.dataset.p:null;
+box.querySelector("summary").innerHTML="<b>"+esc(r.title)+"</b> · "+esc(r.range)+" · "+Math.round(tp).toLocaleString()+" points"+(dn&&nl?" ("+Math.round(dn).toLocaleString()+" scored, "+Math.round(tp-dn).toLocaleString()+" to come)":"")+(dl?' <span class="pogdl">('+sgn(dl)+" vs best lineups)</span>":"")+" "+(!nl&&D.reg?"":em?'<span class="pogst bad">⚠ '+em+" empty slot"+(em!==1?"s":"")+" on "+bd+" day"+(bd!==1?"s":"")+"</span>":'<span class="pogst ok">✓ every slot filled</span>');
+box.querySelector(".pogb1").innerHTML=vsLine(r,o,tp,bp)+(wl?'<ul class="pogw">'+wl+"</ul>":"")+(nl?'<p class="small pogrk">'+(rk>=.5?"<b>Rest risk:</b> if every player on a back-to-back&#39;s 2nd night rests, this "+RW+" loses <b>"+Math.round(rk)+" points</b>.":"<b>Rest risk:</b> no back-to-back nights change this "+RW+"&#39;s lineups.")+(nob.length?" <b>No bench</b> on "+join(nob)+": that many points are lost if a starter sits.":"")+"</p>":"")+table(r,o);
+var s2=box.querySelector(".scroll");if(s2){s2.scrollLeft=left;var tq=SCR&&s2.querySelector(".pogtod");if(tq&&s2.scrollWidth>s2.clientWidth)s2.scrollLeft=Math.max(0,tq.offsetLeft-62)}if(fo){var f=box.querySelector('.pogopp[data-p="'+fo+'"]');if(f)f.focus()}});
+SCR=0;var top=app.querySelector(".pogsum"),fin=D.reg&&!ts;top.className="pogsum "+(fin?"":te?"bad":"ok");top.innerHTML=(fin?"<b>P"+D.rounds[PI].p+" is finished.</b> This is who was active each night and what they scored.":D.reg?(te?"⚠ <b>"+te+" of "+ts+" lineup slots are empty</b> in the days to come in P"+D.rounds[PI].p+". The days are listed below.":"✓ <b>All "+ts+" lineup slots are filled</b> in the days to come in P"+D.rounds[PI].p+"."):te?"⚠ <b>"+te+" of "+ts+" lineup slots are empty</b> across the playoffs. The days are listed under each round.":"✓ <b>All "+ts+" lineup slots are filled</b> across the playoffs.")+(any?' <button type="button" class="pogre" data-r="*">↺ Reset '+(D.reg?"this period":"all days")+"</button>":"")+(DROPPED?' <span class="small">'+DROPPED+" edited day"+(DROPPED!==1?"s":"")+" changed because your roster did.</span>":"")}
+// ---- Try a roster move
+function optAdd(cur){var taken={};S.moves.forEach(function(m){if(m.a&&m.a!==cur)taken[m.a]=1});var gr={};Object.keys(D.pl).forEach(function(n){var p=D.pl[n];if(!p.own||taken[n])return;(gr[p.own]=gr[p.own]||[]).push(n)});
+var keys=Object.keys(gr).sort(function(a,b){return (a==="FA"?-1:0)-(b==="FA"?-1:0)||a.localeCompare(b)});
+return '<option value="">Nobody</option>'+keys.map(function(g){return '<optgroup label="'+(g==="FA"?"Free agents":"Trade with "+esc(g))+'">'+gr[g].sort(function(a,b){return D.pl[b].top-D.pl[a].top}).map(function(n){var p=D.pl[n];return '<option value="'+esc(n)+'"'+(n===cur?" selected":"")+">"+esc(n+" ("+p.pos+" · "+p.t+" · "+p.top.toFixed(1)+")")+"</option>"}).join("")+"</optgroup>"}).join("")}
+function optDrop(cur,none){var taken={};S.moves.forEach(function(m){if(m.d&&m.d!==cur)taken[m.d]=1});return '<option value="">'+none+"</option>"+D.ros.filter(function(n){return !taken[n]}).map(function(n){var p=D.pl[n];return '<option value="'+esc(n)+'"'+(n===cur?" selected":"")+">"+esc(n+" ("+p.pos+" · "+p.t+" · "+p.top.toFixed(1)+")")+"</option>"}).join("")}
+function emptyTotals(m){var o={};rds().forEach(function(r){var e=0,t=0;r.days.forEach(function(x){if(!live(x))return;e+=5-used(m[x.k]);t+=pts(m[x.k],x)});o[r.p]=[e,t]});return o}
+function panel(){var box=app.querySelector(".pogtry");box.querySelector(".pogtr").innerHTML=S.moves.map(function(m,i){return '<div class="pogmv"><label class="dropsel">Add <select class="pogadd" data-i="'+i+'">'+optAdd(m.a)+'</select></label><label class="dropsel">drop <select class="pogdrp" data-i="'+i+'">'+optDrop(m.d,"Nobody (open spot)")+"</select></label>"+(S.moves.length>1||m.a||m.d?'<button type="button" class="pogre pogrm" data-i="'+i+'">✕</button>':"")+"</div>"}).join("");
+var act=S.moves.filter(function(m){return m.a||m.d}),res=box.querySelector(".pogtres");if(!act.length){res.innerHTML="";return}
+var a=emptyTotals(BASE),b=emptyTotals(BEST),te0=0,te1=0,tt=0,bits=rds().map(function(r){te0+=a[r.p][0];te1+=b[r.p][0];var v=Math.round(b[r.p][1]-a[r.p][1]);tt+=v;return "P"+r.p+" <b>"+sgn(v)+"</b>"}),adds=act.filter(function(m){return m.a}).length,drops=act.filter(function(m){return m.d}).length,over=D.rsize+adds-drops;
+res.innerHTML="<b>With "+(act.length>1?"these moves":"this move")+":</b> "+bits.join(" · ")+(D.reg?"":" · total <b>"+sgn(tt)+"</b>")+" points · empty slots <b>"+te0+" → "+te1+"</b>"+(over>13?' <span class="pogneg">· that&#39;s '+over+" players, over the 13-player limit: choose who to drop</span>":"")}
+// ---- Who fills the empty slots: quick count on the days with empty slots, then the exact change over every day for the best of them
+function fixRank(){var box=app.querySelector(".pogfixo"),drop=S.drop||D.drop,live_=DAYS.filter(live),hit=live_.filter(function(x){return used(BEST[x.k])<5}),tot=hit.reduce(function(t,x){return t+5-used(BEST[x.k])},0);
+var sel=app.querySelector(".pogfixd");sel.innerHTML=optDrop(drop,"Nobody (open spot)");
+if(!tot){box.innerHTML='<p class="small">Every slot is filled '+(D.reg?"this period":"on this roster")+', so there&#39;s nothing to fix.</p>';return}
+var list=Object.keys(D.pl).filter(function(n){return D.pl[n].own&&!S.moves.some(function(m){return m.a===n})}).map(function(n){var g=0;hit.forEach(function(x){if(gm(n).indexOf(x.i)<0)return;var l=NM[x.k].filter(function(q){return q!==drop}).concat([n]).sort(function(a,b){return tv(b,x)-tv(a,x)});g+=Math.max(0,used(solve(l,null,x))-used(BEST[x.k]))});return {n:n,g:g}}).filter(function(c){return c.g>0});
+function exact(c){var fx=[],em=0,dp=0;live_.forEach(function(x){var nm=NM[x.k],l=nm.filter(function(q){return q!==drop});if(gm(c.n).indexOf(x.i)>=0)l=l.concat([c.n]);l.sort(function(a,b){return tv(b,x)-tv(a,x)});var m=solve(l,null,x),d=used(m)-used(BEST[x.k]);em+=d;if(d>0)fx.push(x.date);dp+=pts(m,x)-pts(BEST[x.k],x)});c.net=em;c.fx=fx;c.dp=dp;return c}
+function top(kind){return list.filter(function(c){return (D.pl[c.n].own==="FA")===kind}).sort(function(a,b){return b.g-a.g||D.pl[b.n].top-D.pl[a.n].top}).slice(0,15).map(exact).filter(function(c){return c.net>0}).sort(function(a,b){return b.net-a.net||b.dp-a.dp}).slice(0,5)}
+function tb(t,rows){return rows.length?"<h4>"+t+'</h4><div class="scroll"><table class="pogfx" data-xs><thead><tr><th>Player</th><th>FP/G</th><th>Empty slots fixed</th><th>Days it helps</th><th>Points '+(D.reg?"P"+D.rounds[PI].p:"P22–P24")+'</th><th></th></tr></thead><tbody>'+rows.map(function(c){var p=D.pl[c.n];return '<tr><td><b class="pcn">'+esc(c.n)+'</b> <span class="nbat sm" data-t="'+esc(p.t)+'">'+esc(p.t)+"</span> "+esc(p.pos)+(p.own!=="FA"?' <span class="small">· '+esc(p.own)+"</span>":"")+'</td><td class="num">'+p.top.toFixed(1)+'</td><td class="num"><b>'+c.net+"</b> of "+tot+"</td><td>"+esc(c.fx.join(", "))+'</td><td class="num">'+sgn(Math.round(c.dp))+'</td><td><button type="button" class="pogre pogtr1" data-n="'+esc(c.n)+'">Try</button></td></tr>'}).join("")+"</tbody></table></div>":""}
+var fa=top(true),tr=top(false);box.innerHTML=(fa.length||tr.length)?tb("Free agents",fa)+tb("Trade targets",tr):'<p class="small">Nobody fixes more slots than dropping '+esc(drop)+" costs. Try dropping someone else.</p>"}
+function changed(){DROPPED=0;calcAll();save();panel();fixRank();render()}
+// ---- regular season: one period at a time
+function goPer(i){if(i<0||i>=D.rounds.length)return;clear();PI=i;SCR=1;setDays();calcAll();panel();fixRank();perBar();render()}
+function perBar(){var b=app.querySelector(".pogbar");if(!b)return;var anyL=rds()[0].days.some(live);[].forEach.call(app.querySelectorAll(".pogtry,.pogfix"),function(e){e.hidden=!anyL});b.innerHTML='<button type="button" class="pogre pogpv" data-s="-1"'+(PI?"":" disabled")+' aria-label="Previous period">‹</button><label class="dropsel">Period <select class="pogpers">'+D.rounds.map(function(r,i){return '<option value="'+i+'"'+(i===PI?" selected":"")+">"+esc(r.title+" · "+r.range+(r.opn?" · vs "+r.opn:"")+(r.res?" · "+r.res[0]+" "+Math.round(r.res[1])+"–"+Math.round(r.res[2]):"")+(r.em?" · ⚠ "+r.em+" empty":""))+"</option>"}).join("")+'</select></label><button type="button" class="pogre pogpv" data-s="1"'+(PI<D.rounds.length-1?"":" disabled")+' aria-label="Next period">›</button>'}
+// ---- moves in the grid
+function move(k,n,to){var a=ST[k],from="B";SL.forEach(function(q){if(a[q]===n)from=q});if(from===to||!can(n,to))return false;var o={};SL.forEach(function(q){o[q]=a[q]});
+if(to==="B")o[from]=null;else{var q=o[to];o[to]=n;if(from!=="B")o[from]=q&&can(q,from)?q:null}ds(k).pin=o;DROPPED=0;calc(DAY[k]);save();render();return true}
+function clear(){SEL=null;DRAG=null;app.classList.remove("pogon");[].forEach.call(app.querySelectorAll(".pogok,.pogno,.pogov,.pogsel"),function(e){e.classList.remove("pogok","pogno","pogov","pogsel")})}
+function mark(k,n){app.classList.add("pogon");var ib=bench(DAY[k]).indexOf(n)>=0;[].forEach.call(app.querySelectorAll('[data-d="'+k+'"][data-k]:not(.pogi)'),function(e){if(e.dataset.n===n)return;e.classList.add(can(n,e.dataset.k)&&!(ib&&e.dataset.k==="B")?"pogok":"pogno")})}
+function refocus(k,n){var e=[].filter.call(app.querySelectorAll('td[data-d="'+k+'"][data-n]'),function(c){return c.dataset.n===n})[0];if(e)e.focus({preventScroll:true})}
+function act(t){var c=t.closest("td[data-k]");if(!c){clear();return}
+if(SEL){var s=SEL;if(c.dataset.n===s.n&&c.dataset.d===s.k){clear();return}if(c.dataset.d===s.k&&c.classList.contains("pogok")){clear();move(s.k,s.n,c.dataset.k);refocus(s.k,s.n);return}clear()}
+if(c.dataset.n){SEL={k:c.dataset.d,n:c.dataset.n};c.classList.add("pogsel");mark(SEL.k,SEL.n)}}
+function iconAct(b){var k=b.dataset.d,n=b.dataset.n,sl=b.dataset.k,d=ds(k);if(b.dataset.a==="lock"){if(sl in d.pin)delete d.pin[sl];else d.pin[sl]=n}else if(b.dataset.a==="sit"){if(d.sit.indexOf(n)<0)d.sit.push(n);Object.keys(d.pin).forEach(function(q){if(d.pin[q]===n)delete d.pin[q]})}else if(b.dataset.a==="unsit")d.sit=d.sit.filter(function(q){return q!==n});clear();calc(DAY[k]);save();render()}
+// phones: a tap near the name lands on it, so the first tap picks him up and a second tap on his name opens the card
+app.addEventListener("click",function(e){if(!TOUCH)return;var c=e.target.closest("td[data-n]");if(!c||!e.target.closest(".pcn"))return;if(SEL&&SEL.n===c.dataset.n&&SEL.k===c.dataset.d){clear();return}e.stopPropagation();e.preventDefault();act(c)},true);
+app.addEventListener("click",function(e){var i=e.target.closest(".pogi");if(i){e.preventDefault();iconAct(i);return}
+var pv=e.target.closest(".pogpv");if(pv){goPer(PI+(+pv.dataset.s));return}
+var t=e.target.closest(".pogtr1");if(t){var free=S.moves.filter(function(m){return !m.a&&!m.d})[0];if(free){free.a=t.dataset.n;free.d=S.drop||D.drop}else S.moves.push({a:t.dataset.n,d:S.drop||D.drop});changed();return}
+var rm=e.target.closest(".pogrm");if(rm){S.moves.splice(+rm.dataset.i,1);if(!S.moves.length)S.moves.push({a:"",d:""});changed();return}
+if(e.target.closest(".pogmore")){S.moves.push({a:"",d:""});panel();return}
+var b=e.target.closest(".pogre[data-r]");if(b){clear();var r=b.dataset.r;Object.keys(S.days).forEach(function(k){if(r==="*"?DAYS.indexOf(DAY[k])>=0:r===k)delete S.days[k]});DROPPED=0;calcAll();save();render();return}
+if(e.target.closest(".pcn")||e.target.closest("summary")||e.target.closest("select,label,button"))return;if(e.target.closest("td[data-k]"))act(e.target);else if(SEL)clear()});
+app.addEventListener("change",function(e){var t=e.target;if(t.classList.contains("pogopp")){S.opp[t.dataset.p]=t.value;save();render();return}
+if(t.classList.contains("pogpers")){goPer(+t.value);return}
+if(t.classList.contains("pogfixd")){S.drop=t.value;save();fixRank();return}
+if(t.classList.contains("pogadd")||t.classList.contains("pogdrp")){var m=S.moves[+t.dataset.i];if(t.classList.contains("pogadd"))m.a=t.value;else m.d=t.value;changed()}});
+app.addEventListener("keydown",function(e){if(e.key==="Escape"&&SEL){clear();return}if((e.key==="Enter"||e.key===" ")&&e.target.matches&&e.target.matches("td[data-k]")){e.preventDefault();act(e.target)}});
+app.addEventListener("dragstart",function(e){var c=e.target.closest&&e.target.closest("td[data-n]");if(!c){e.preventDefault();return}clear();DRAG={k:c.dataset.d,n:c.dataset.n};e.dataTransfer.effectAllowed="move";try{e.dataTransfer.setData("text/plain",DRAG.n)}catch(x){}setTimeout(function(){if(DRAG){c.classList.add("pogsel");mark(DRAG.k,DRAG.n)}},0)});
+app.addEventListener("dragover",function(e){if(!DRAG)return;var c=e.target.closest("td[data-k]");if(c&&c.dataset.d===DRAG.k&&can(DRAG.n,c.dataset.k)&&c.dataset.n!==DRAG.n){e.preventDefault();e.dataTransfer.dropEffect="move";[].forEach.call(app.querySelectorAll(".pogov"),function(o){if(o!==c)o.classList.remove("pogov")});c.classList.add("pogov")}});
+app.addEventListener("drop",function(e){if(!DRAG)return;e.preventDefault();var c=e.target.closest("td[data-k]"),d=DRAG;clear();if(c&&c.dataset.d===d.k)move(d.k,d.n,c.dataset.k)});
+app.addEventListener("dragend",clear);
+Object.keys(DAY).forEach(function(k){BASE[k]=DAY[k].auto});
+(window.__pog=window.__pog||{})[appId]={solve:solve,D:D,S:S,best:BEST,st:ST,pts:pts,go:goPer};
+panel();fixRank();perBar();render()};</script>'''
+def pog_tools(fix):   # Try a roster move and Who fills the empty slots, shared by the two lineup grids
+    return ('<div class="pogbox pogtry"><h3>Try a roster move</h3><div class="pogtr"></div><div class="pogtres"></div><button type="button" class="pogre pogmore">+ Another move</button>'
+            '<p class="small">Choose free agents or rivals&#39; players to add, and who leaves. The grid, its warnings and points all switch to that roster. Trades still need the other manager to agree.</p></div>'
+            f'<details class="pogbox pogfix" open><summary><b>Who fills the empty slots</b></summary><label class="dropsel">If I drop <select class="pogfixd"></select></label><div class="pogfixo"></div><p class="small">{fix}</p></details>')
+def _build_pogrid():
+    global pogrid,pogstat
+    days=[]; rounds=[]; pl={}; te=ts=0; idx_=0
+    def fp(n,own=None,tv=None):
+        t,s=tv or SV[n]
+        return {'t':t,'pos':INFO[n]['pos'],'c':TEAMCOL.get(t,('#667085',))[0],'top':round(max(s.values()),3),'s':{k:round(v,3) for k,v in s.items()},'own':own,
+                'g':[x['i'] for x in days if x['d'] in G[t] and not (n in out and x['d']<out[n]) and not sits(n,t,x['d'])]}
+    for p in POP:
+        for d in pdates(p): days.append({'i':idx_,'d':d,'p':p}); idx_+=1
+    pcks=defaultdict(dict)
+    def fa_pick(d,slot=None):
+        c=[n for n,(t,s) in FA.items() if s and d in G[t] and healthy(n) and (slot is None or slot in s)]
+        return sorted(c,key=lambda n:-INFO[n]['best'])[:2]
+    for p in POP:
+        ds=pdates(p); out_days=[]
+        for x in [y for y in days if y['p']==p]:
+            d=x['d']
+            a=sorted(avail(GRON(d),d),key=lambda v:-max(v[1].values()))
+            sl,ut,_=_polineup(a)
+            auto={r:sl[r][0] for r in sl}
+            for i,u in enumerate(ut): auto[f'U{i}']=u[0]
+            games=sum(1 for t_ in G if d in G[t_])
+            past=d<TODAY
+            if games and not past: ts+=5; te+=5-len(auto)
+            for n,s_ in a: pl.setdefault(n,fp(n,None,R[n]))
+            fa_={'a':fa_pick(d),'G':fa_pick(d,'G'),'F':fa_pick(d,'F'),'C':fa_pick(d,'C')} if games and not past else {'a':[]}
+            out_days.append({'i':x['i'],'k':d.isoformat(),'dow':d.strftime('%a'),'date':d.strftime('%b %-d'),'long':d.strftime('%a %b %-d'),'games':games,'past':past,'today':d==TODAY,'ir':irlist(d),'auto':auto,
+                             'all':[n for n,_s in a],'b2b':[n for n,_s in a if (d-dt.timedelta(days=1)) in G[INFO[n]['team']]],'fa':fa_})
+        cnt=POLIKE.get(p) or {}
+        tn=sum(cnt.values()); lk=max(cnt,key=cnt.get) if cnt else None
+        rounds.append({'p':p,'title':f'P{p} {RND[p]}','range':f'{ds[0].strftime("%b %-d")}–{ds[-1].strftime("%b %-d")}','days':out_days,'likely':tkey(lk) if lk else None,'lp':round(cnt[lk]*100/tn) if lk and tn else 0})
+    # every player you could add: free agents and rivals' active players
+    for n,(t,s) in FA.items():
+        if s and n not in pl and healthy(n) and INFO[n]['best']>=15: pl[n]=fp(n,'FA',(t,s))
+    for k,ro in OTH.items():
+        for n,(t,s) in ro.items():
+            if s and n not in pl and INFO[n]['best']>=15: pl[n]=fp(n,dname(tkey(k)),(t,s))
+    for x in out_days_all(rounds):
+        for ks in x['fa'].values():
+            for n in ks:
+                if n not in pl: pl[n]=fp(n,'FA',FA[n])
+    # roster at the start of the playoffs, and the player to drop by default in the ranking: the least useful there
+    d0=pstart(22); ros=sorted(set(GRON(d0))|set(irlist(d0)),key=lambda n:-INFO[n]['best'])
+    for n in list(ros)+[n for x in days for n in irlist(x['d'])]:
+        if n not in pl: pl[n]=fp(n,None,R[n])
+    for n in R:
+        if INFO[n]['sec']=='I' and n in pl: pl[n]['ib']=irback(n)
+    drop=min([n for n in ros if n not in KEEP] or ros,key=lambda n:tot(MV[n],POP))
+    opp={}
+    for k,ro in OTH.items():
+        dd={}
+        for x in days:
+            a=avail(ro,x['d']); sl,ut,v=_polineup(a)
+            act={y[0] for y in sl.values()}|{y[0] for y in ut}
+            dd[x['i']]=[len(act),round(v,2),round(sum(max(s.values()) for n,s in a if n not in act),2)]
+        opp[tkey(k)]={'n':dname(tkey(k)),'d':dd}
+    ret=[(d_,n,x) for x,(d_,n) in IRDROP.items() if d_<=pstart(24)]
+    note=(' IR returns are counted: '+'; '.join(f'{html.escape(short(n))} comes back and {html.escape(short(x))} is dropped to make room' for d_,n,x in sorted(ret))+'.') if ret else ''
+    data=json.dumps({'me':slug_me,'pl':pl,'rounds':rounds,'opp':opp,'ros':ros,'drop':drop,'rsize':sum(1 for n in ros if not IRON(n,d0))},ensure_ascii=False).replace('</','<\\/')
+    pogstat=(f'<p class="pogstat {"bad" if te else "ok"}">'+(f'⚠ <b>{te} of {ts} lineup slots are empty</b> across the playoffs on today&#39;s roster.' if te else f'✓ <b>All {ts} lineup slots are filled</b> across the playoffs on today&#39;s roster.')
+             +''' <a href="#pogrid" onclick="window.__sub('pfgrid');return false">See the lineup grid →</a></p>''')
+    pogrid=('<section id="pogrid"><h2>Playoff lineup grid</h2><div id="pogapp" class="pogapp"><div class="pogsum"></div>'
+            +pog_tools('Ranked by empty slots fixed across the playoffs, after any new holes from losing the dropped player. Press <b>Try</b> to put him in the roster move above. The wire will change by March.')
+            +''.join(f'<details class="pogr" open data-rd="{r["p"]}"><summary></summary><div class="pogb1"></div></details>' for r in rounds)+'</div>'
+            '<p class="small"><b>Set your own lineup:</b> drag a player to another slot or to the bench, or tap his box, then tap where he goes (on a phone, tapping his name a second time opens his player card). He can only move within his own day and into a slot he can play. Dragging fixes that whole day as you set it. '
+            'For a lighter touch, hover a player: 🔓 locks him in his slot and 🚫 sits him that day, and the best lineup fills in around your choice. Nothing here changes CBS, and it&#39;s saved in this browser.</p>'
+            f'<p class="small">It starts from each day&#39;s best lineup on your current roster and updates every night. The number is his FP/G in that slot, including the slot bonus, and <b>B2B</b> marks the 2nd night of a back-to-back. Your out-until dates and back-to-back rests count as not playing. <b>IR</b> players sit in their own row until their out-until date, and count as back from that day.{note} '
+            '<b>Bench pts</b> are your bench players&#39; FP/G that day: playoff ties go to the team with more. <b>Likely</b> opponents come from the simulated seasons in Overview; later rounds assume you got there. Opponents use their current active rosters, and win % has the page&#39;s usual ±11% swing.</p></section>'
+            '<style>.pogstat{padding:9px 12px;border-radius:8px;margin:0 0 12px}.pogstat.bad{background:var(--badbg)}.pogstat.ok{background:var(--okbg)}.pogstat a{white-space:nowrap}'
+            '.pogsum{padding:9px 12px;border-radius:8px;margin:0 0 10px}.pogsum.bad{background:var(--badbg);color:var(--bad)}.pogsum.ok{background:var(--okbg);color:var(--ok)}'
+            '.pogbox{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 12px;background:var(--panel)}.pogbox h3{margin:0 0 6px}.pogbox h4{margin:8px 0 4px;font-size:.88rem}.pogbox>summary{cursor:pointer}.pogbox .small{margin:6px 0 0}'
+            '.pogmv{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:0 0 6px}.pogmv select,.pogfixd,.pogopp,.pogpers{max-width:300px}.pogtres{margin:6px 0;font-size:.92rem}.pogfix>label{display:inline-block;margin:8px 0 2px}.pogbar{display:flex;align-items:center;gap:6px;margin:0 0 8px}.pogbar label{display:flex;align-items:center;flex:0 1 500px;min-width:0}.pogbar .pogpers{flex:1 1 auto;width:0;min-width:0;max-width:none}.pogbar .pogre{flex:none;font-size:1rem;margin:0;padding:1px 11px}.pogbar .pogre:disabled{opacity:.35;cursor:default}.pogseas{margin:0 0 8px}.pogfx{font-size:.86rem}'
+            '.pogvs{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:.88rem;margin:2px 0 6px}.pogrk{margin:4px 0 8px}.pogpos{color:var(--ok)}.pogneg{color:var(--bad)}'
+            '.pogr{margin:0 0 14px}.pogr>summary{cursor:pointer;padding:6px 0}.pogst{margin-left:6px;font-size:.85rem;font-weight:600}.pogst.bad{color:var(--bad)}.pogst.ok{color:var(--ok)}.pogdl{color:var(--warn);font-weight:600;font-size:.82rem}'
+            '.pogw{margin:4px 0 8px;padding-left:18px;font-size:.88rem}.pogw li{margin:3px 0}'
+            '.pogre{font:600 .72rem var(--body);padding:1px 8px;margin-top:3px;border:1px solid var(--accent);border-radius:999px;background:none;color:var(--accent);cursor:pointer}'
+            '.pogt1{table-layout:fixed;min-width:980px;width:100%;border-collapse:separate;border-spacing:2px}.pogt1 th,.pogt1 td{padding:4px 6px;vertical-align:top;border:0;white-space:normal;text-align:left}'
+            '.pogt1 .pogs{width:58px;position:sticky;left:0;z-index:1;background:var(--panel);font-size:.76rem;color:var(--muted);vertical-align:middle}'
+            '.pogd{font-size:.86rem;background:var(--panel)}.pogd span{font-weight:400;color:var(--muted);margin-left:5px}.pogd i{display:block;font-style:normal;font-size:.72rem;font-weight:600;margin-top:2px}.pogd.ok i{color:var(--ok)}.pogd.bad i{color:var(--bad)}.pogd.warn i{color:var(--warn)}.pogd.past i,.pogd.none i{color:var(--muted)}'
+            '.pogp{position:relative;background:color-mix(in srgb,var(--tc) 14%,var(--panel));border-left:4px solid var(--tc)!important;border-radius:4px;font-size:.84rem;line-height:1.25;overflow-wrap:anywhere}.pogp[draggable]{cursor:grab}.pogp[draggable]:active{cursor:grabbing}.pogpast{opacity:.82}.pogirc{opacity:.72;border-left-style:dashed!important}.pogd.pogtod{background:color-mix(in srgb,var(--accent) 24%,var(--panel));box-shadow:inset 2px 0 0 var(--accent),inset -2px 0 0 var(--accent),inset 0 3px 0 var(--accent)!important}.pogd.pogtod,.pogd.pogtod span{color:var(--accent)}.pogm{font-size:.72rem;color:var(--muted);margin-top:2px}.pogb{font:700 .62rem var(--mono);color:var(--warn)}.pogb.nw{color:var(--ok)}.pognew{box-shadow:inset 0 0 0 1px var(--ok)}.pogp:has(.pogi.on)>.pcn{display:block;padding-right:18px}.pogsat{opacity:.6}.pogsat .pcn{text-decoration:line-through}'
+            '.pogic{position:absolute;top:1px;right:1px;display:flex;gap:1px}.pogi{border:0;background:var(--panel);border-radius:4px;padding:0 2px;font-size:.68rem;line-height:1.3;cursor:pointer;opacity:0}.pogp:hover .pogi,.pogx .pogi,.pogi:focus-visible,.pogi.on{opacity:1}@media (hover:none){.pogi{opacity:.75}.pogp>.pcn{display:block;padding-right:36px!important}}'
+            '.pogx{position:relative;background:var(--badbg);color:var(--bad);font-size:.8rem;font-weight:600;border-radius:4px;vertical-align:middle!important}'
+            '.pogh th,.pogh td{padding-top:9px!important}.pogh th{letter-spacing:.05em;text-transform:uppercase}.pogbz{min-height:20px;border-radius:4px}.pogt td,.pogt th{font-size:.82rem;border-top:1px solid var(--line)!important}.pogf td,.pogf th{font-size:.76rem;padding-top:1px;padding-bottom:1px}.pogf1 td,.pogf1 th{border-top:1px solid var(--line)!important}'
+            '.pogapp td[data-k]:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.pogon .pogt1 td{opacity:.3;transition:opacity .1s}.pogon .pogt1 td.pogok,.pogon .pogt1 td.pogsel,.pogon .pogt1 .pogt td,.pogon .pogt1 .pogf td{opacity:1}.pogsel{outline:2px solid var(--accent);outline-offset:1px}.pogok{outline:2px dashed var(--accent);outline-offset:-2px}.pogok:not(.pogp){cursor:pointer}.pogov{background:color-mix(in srgb,var(--accent) 28%,var(--panel))!important}</style>'
+            +POGJS+'<script>window.__pogInit("pogapp",'+data+')</script>')
+def out_days_all(rounds): return [x for r in rounds for x in r['days']]
+slug_me=re.sub(r'[^A-Za-z0-9]+','-',MEDISP).strip('-') or 'me'
+_build_pogrid()
 th_head=''.join(f'<th>P{p}</th>' for p in POP)
-posec=f"""{oddsec}<section class="keys">{''.join(pk)}</section>{poplan}
+posec=f"""<nav class="subtabs" data-g="playoffs" aria-label="Playoff views"><button type="button" data-s="pfov" aria-pressed="true">Overview</button><button type="button" data-s="pfgrid" aria-pressed="false">Lineup grid</button><button type="button" data-s="pfplan" aria-pressed="false">Roster plan</button><button type="button" data-s="pfrules" aria-pressed="false">League rules</button></nav>
+<div id="pfov" class="subpane">{pogstat}{oddsec}<section class="keys">{''.join(pk)}</section>
 <section class="brief"><h2>What it means</h2><ul>{''.join(insight)}</ul></section>
 <section><h2>The playoff field · projected by round</h2>
 <div class="scroll"><table><thead><tr><th>Team</th><th>P22 proj · slots</th><th>P23 proj · slots</th><th>P24 proj · slots</th><th>Total</th><th>Your win % P22</th><th>P23</th><th>P24</th></tr></thead><tbody>{fieldrows}</tbody></table></div>
 <p class="small">Each team's best daily lineups from its current active roster (IR players left out for other teams) over each round's NBA schedule. Win % is your chance against that team in that round with normal week-to-week swing (about ±11%). Seeds aren't set until P21 ends, so this compares you with every possible opponent.</p></section>
+</div>
+<div id="pfgrid" class="subpane" hidden>{pogrid}</div>
+<div id="pfplan" class="subpane" hidden>{poplan}
 <section class="two"><div><h2>Your players' playoff games</h2>
 <div class="scroll"><table><thead><tr><th>Player</th>{th_head}<th>Total</th><th>Playoff value</th></tr></thead><tbody>{myrows}</tbody></table></div>
 <p class="small">Games per round (P24 is only 5 days). Playoff value = points your playoff lineups lose without him after your bench fills in.</p></div>
@@ -2278,7 +2543,8 @@ posec=f"""{oddsec}<section class="keys">{''.join(pk)}</section>{poplan}
 <div><h2>Free agents with playoff schedules</h2>
 <div class="scroll"><table><thead><tr><th>Player</th><th>CBS FP/G</th>{th_head}<th>P22–24 gain</th></tr></thead><tbody>{farows}</tbody></table></div>
 <p class="small">Today's free agents, for reference: the wire will look different by March. Gains are for P22–P24 in your stream slot ({html.escape(short(STREAM))}).</p></div></section>
-<section class="brief"><h2>League notes · playoffs</h2><ul>
+</div>
+<div id="pfrules" class="subpane" hidden><section class="brief"><h2>League notes · playoffs</h2><ul>
 <li><b>Who gets in:</b> 8 of 10 teams make the playoffs (automatic). The bottom 2 miss out, and last place gets the league punishment.</li>
 <li><b>When:</b> the last 3 periods. P22 Quarterfinal Mar 15–21, P23 Semifinal Mar 22–28, P24 Final Mar 29–Apr 2 (5 days; the NBA's last week isn't used).</li>
 <li><b>Bracket:</b> no reseeding after each round, so the bracket set after P21 stays fixed. There is a 3rd-place game in P24; no consolation bracket.</li>
@@ -2288,7 +2554,7 @@ posec=f"""{oddsec}<section class="keys">{''.join(pk)}</section>{poplan}
 <li><b>Add/drops in the playoffs:</b> restricted, so only teams still alive can add and drop players. The 2-waiver-adds-per-period limit still applies.</li>
 <li><b>Trades:</b> deadline Thu Feb 25, 2027, 11:59 PM ET (P19). Trades go through a 1-day vote; more than 5 objections sends it to the commissioner.</li>
 <li><b>IR:</b> must still be legal 5 minutes before the first NBA game of each day, or the whole lineup scores zero that day.</li>
-</ul><p class="small">From the league's Rules page on CBS (Schedule &amp; Playoffs, Transaction Settings) and the commissioner's season notes. CBS doesn't say whether division winners get a guaranteed seed.</p></section>"""
+</ul><p class="small">From the league's Rules page on CBS (Schedule &amp; Playoffs, Transaction Settings) and the commissioner's season notes. CBS doesn't say whether division winners get a guaranteed seed.</p></section></div>"""
 
 # ---- Streaming (Waivers → Streaming)
 def ngames(d): return sum(1 for t in G if d in G[t])//2
@@ -2593,7 +2859,108 @@ if _p1: _nav+=f'<span class="sslab" style="margin-left:8px">P{PER[1]}</span>'+''
 SSJS=('<script>(function(){var nav=document.querySelector(".ssnav");if(!nav)return;function show(v){var pp=null;[].forEach.call(nav.querySelectorAll("button"),function(b){var on=b.dataset.d===v;b.setAttribute("aria-pressed",on?"true":"false");if(on)pp=b.dataset.p});[].forEach.call(document.querySelectorAll(".ssper"),function(x){x.hidden=x.dataset.p!==pp});'
       '[].forEach.call(document.querySelectorAll(".ssday"),function(p){p.hidden=p.dataset.d!==v})}'
       '[].forEach.call(nav.querySelectorAll("button"),function(b){b.addEventListener("click",function(){show(b.dataset.d)})});show(nav.dataset.first)})();</script>')
-startsit_pane=(MUCSS+(f'''<section class="brief"><h2>Start/Sit</h2><div class="ssper" data-p="{PER[0]}">{_s0[0]}</div>{f'<div class="ssper" data-p="{PER[1]}" hidden>{_s1[0]}</div>' if len(PER)>1 else ''}
+# Season → Lineup grid: the playoff grid's code (POGJS), one regular-season period at a time, every day of it. Days to come use the
+# best lineup, with Start/Sit's matchup multipliers where the opponents are known (opp.txt). Finished days show who was ACTIVE and
+# their real points (PASTME, the same lineup rule as BENCH).
+def _build_pgr():
+    global pgrjs,pgrhtml
+    days=[]; rounds=[]; pl={}; opp={}; pm={}
+    RP=list(range(1,22))
+    for p in RP:
+        for d in pdates(p): days.append({'i':len(days),'d':d,'p':p})
+    dd={x['i']:x['d'] for x in days}; tg=defaultdict(list)
+    for x in days:
+        if x['d']>=TODAY:
+            for t in G:
+                if x['d'] in G[t]: tg[t].append(x['i'])
+    def fp(n,own,tv):   # 'g' (days he plays) only when it isn't simply his NBA team's games: the page gets big otherwise
+        t,s=tv; g=[i for i in tg[t] if not (n in out and dd[i]<out[n]) and not sits(n,t,dd[i])]
+        o={'t':t,'pos':INFO[n]['pos'],'c':TEAMCOL.get(t,('#667085',))[0],'top':round(max(s.values()),3),'s':{k:round(v,3) for k,v in s.items()},'own':own,'gr':pgroups(n)}
+        if g!=tg[t]: o['g']=g
+        return o
+    def fa_pick(d,slot=None):
+        return sorted([n for n,(t,s) in FA.items() if s and d in G[t] and healthy(n) and (slot is None or slot in s)],key=lambda n:-INFO[n]['best'])[:2]
+    def line(ro,d):   # best lineup that day, matchups included: (filled slots by key, sorted players, [filled, points, bench points])
+        _,adj=adjday(ro,d); adj=sorted(adj,key=lambda v:-max(v[1].values()))
+        sl,ut,v=_polineup(adj); auto={r:sl[r][0] for r in sl}
+        for i,u in enumerate(ut): auto[f'U{i}']=u[0]
+        act=set(auto.values())
+        return auto,adj,[len(act),round(v,2),round(sum(max(s.values()) for n,s in adj if n not in act),2)]
+    def seen(n):
+        if n not in pm:
+            t=INFO[n]['team'] if n in INFO else (SV[n][0] if n in SV else '')
+            pm[n]=[t,INFO[n]['pos'] if n in INFO else '',TEAMCOL.get(t,('#667085',))[0]]
+    def past(d):   # one finished night: {'a':{slot:[name,points]},'b':[[name,points]],'pts','bp'}; nolu when its lineups weren't saved
+        key=d.strftime('%Y%m%d')
+        if key not in PASTME: return {'a':{},'b':[],'pts':round(SCORES.get((key,MEN),0),1),'bp':0,'nolu':1}
+        pl_,ac=PASTME[key]; sl,ut,v=_polineup(sorted(ac,key=lambda x:-max(x[1].values())))
+        a={r:[sl[r][0],round(sl[r][1],1)] for r in sl}
+        for i,u in enumerate(ut): a[f'U{i}']=[u[0],round(u[1],1)]
+        act={e[0] for e in a.values()}; bn=sorted(((n,max(s.values())) for n,s in pl_ if n not in act),key=lambda x:-x[1])
+        for n,_v in list(a.values())+bn: seen(n)
+        return {'a':a,'b':[[n,round(v_,1)] for n,v_ in bn],'pts':round(v,1),'bp':round(sum(x[1] for x in BENCH[(key,MEN)][2]),1)}
+    def past_ir(d):   # a finished night: today's IR players who weren't ACTIVE, had no box score and whose NBA team played (CBS's nightly status doesn't say IR)
+        key=d.strftime('%Y%m%d')
+        if key not in PASTME: return []
+        played={x[0] for x in PASTME[key][0]}
+        return [n for n in sorted(R,key=lambda n:-INFO[n]['best']) if INFO[n]['sec']=='I' and n not in played and _nk(n) not in _NSA.get(key,()) and d in G[R[n][0]]]
+    def opp_past(k,d):
+        key=d.strftime('%Y%m%d'); b_=BENCH.get((key,k))
+        return [5,round(b_[1],1),round(sum(x[1] for x in b_[2]),1)] if b_ else [5,round(SCORES.get((key,k),0),1),0]
+    te=ts=0; worst=[]
+    res={x[0]:[x[2],x[3],x[4]] for x in PAST}
+    for p in RP:
+        k=okey(p); ok=tkey(k) if k else None; out_days=[]; em=0
+        for x in [y for y in days if y['p']==p]:
+            d=x['d']; games=sum(1 for t_ in G if d in G[t_]); today=d==TODAY
+            row={'i':x['i'],'k':d.isoformat(),'dow':'Today' if today else d.strftime('%a'),'date':d.strftime('%b %-d'),'long':d.strftime('%a %b %-d'),'games':games,'past':d<TODAY,'today':today,'ir':irlist(d) if d>=TODAY else past_ir(d),'auto':{},'all':[],'b2b':[],'fa':{'a':[]}}
+            qo=[0,0,0]
+            if games and d<TODAY:
+                row['pa']=past(d)
+                if k: qo=opp_past(k,d)
+            elif games:
+                auto,a,_=line(GRON(d),d); em+=5-len(auto); ts+=5
+                for n,_s in a: pl.setdefault(n,fp(n,None,R[n]))
+                row.update(auto=auto,all=[n for n,_s in a],b2b=[n for n,_s in a if (d-dt.timedelta(days=1)) in G[INFO[n]['team']]],fa={'a':fa_pick(d),'G':fa_pick(d,'G'),'F':fa_pick(d,'F'),'C':fa_pick(d,'C')})
+                if d in OPPD: row['op']={t:[o[0],1 if o[1] else 0] for t,o in OPPD[d].items()}
+                if k: qo=line(OTH[k],d)[2]
+            if ok: opp.setdefault(ok,{'n':dname(ok),'d':{}})['d'][x['i']]=qo
+            out_days.append(row)
+        te+=em
+        if em: worst.append((em,p))
+        rounds.append({'p':p,'title':f'P{p}','range':f'{pstart(p).strftime("%b %-d")}–{pend(p).strftime("%b %-d")}','days':out_days,'opp':ok,'opn':dname(ok) if ok else '','em':em,'res':res.get(p)})
+    for n,(t,s) in FA.items():
+        if s and n not in pl and healthy(n) and INFO[n]['best']>=15: pl[n]=fp(n,'FA',(t,s))
+    for k,ro in OTH.items():
+        for n,(t,s) in ro.items():
+            if s and n not in pl and INFO[n]['best']>=15: pl[n]=fp(n,dname(tkey(k)),(t,s))
+    for r in rounds:
+        for x in r['days']:
+            for ks in x['fa'].values():
+                for n in ks:
+                    if n not in pl: pl[n]=fp(n,'FA',FA[n])
+    d0=max(TODAY,dt.date(2026,10,20)); ros=sorted(set(GRON(d0))|set(irlist(d0)),key=lambda n:-INFO[n]['best'])
+    for n in R:
+        if INFO[n]['sec']=='I' or n in ros: pl.setdefault(n,fp(n,None,R[n]))
+        if INFO[n]['sec']=='I': pl[n]['ib']=irback(n)
+    drop=STREAM if STREAM in ros else min(ros,key=lambda n:tot(MV[n],REG))
+    rsize=sum(1 for n in ros if not IRON(n,d0))
+    cur=next((i for i,r in enumerate(rounds) if r['p']==CUR),len(rounds)-1)
+    data=json.dumps({'reg':1,'me':slug_me,'cur':cur,'pl':pl,'pm':pm,'tg':tg,'rounds':rounds,'opp':opp,'ros':ros,'drop':drop,'rsize':rsize,'dm':{t:{g:round(dmult(t,g),5) for g in 'GFC'} for t in DTEAMS}},ensure_ascii=False).replace('</','<\\/')
+    worst=sorted(worst,key=lambda w:(-w[0],w[1]))[:3]
+    seas=(f'<b>Rest of the regular season, on today&#39;s roster:</b> {te} of {ts} lineup slots are empty'+(', most in '+', '.join(f'P{p} ({e})' for e,p in worst) if worst else '')+'.') if te else f'<b>Rest of the regular season, on today&#39;s roster:</b> all {ts} lineup slots are filled.'
+    last=max(OPPD) if OPPD else None
+    pgrhtml=(f'<section id="seasongrid"><h2>Lineup grid</h2><div id="pgrapp" class="pogapp"><div class="pogbar"></div><p class="small pogseas">{seas}</p><div class="pogsum"></div>'
+             +''.join(f'<details class="pogr" open data-rd="{r["p"]}" hidden><summary></summary><div class="pogb1"></div></details>' for r in rounds)
+             +pog_tools('Ranked by empty slots fixed in this period, after any new holes from losing the dropped player. Press <b>Try</b> to put him in the roster move above. Moves you try carry across every period here, and don&#39;t touch the playoff grid.')+'</div>'
+             '<p class="small"><b>Set your own lineup:</b> for today and later, drag a player to another slot or to the bench, or tap his box, then tap where he goes (on a phone, tapping his name a second time opens his player card). He can only move within his own day and into a slot he can play. Dragging fixes that whole day as you set it. '
+             'For a lighter touch, hover a player: 🔓 locks him in his slot and 🚫 sits him that day, and the best lineup fills in around your choice. Nothing here changes CBS, and it&#39;s saved in this browser.</p>'
+             f'<p class="small"><b>Finished days</b> show who was active that night and their real points, with who was on the bench below. They can differ from CBS by a few points, because CBS uses the slot each player was actually set in. <b>Today and later</b> start from each day&#39;s best lineup on your current roster and update every night. The number is his FP/G in that slot, including the slot bonus and his matchup; ▲ and ▼ mark a soft or tough defense. Opponents are loaded through {last.strftime("%b %-d") if last else "no date yet"}, so later days use plain projections. <b>B2B</b> marks the 2nd night of a back-to-back. <b>IR</b> players sit in their own row until their out-until date, and count as back from that day; on finished nights the row shows today&#39;s IR players who didn&#39;t play. A player CBS had active who scored stays in his slot, because those points counted. '
+             '<b>Bench pts</b> count finished days&#39; real bench points and later days&#39; FP/G: a tied matchup goes to the team with more. Opponents&#39; later days use their current active rosters, and win % has the page&#39;s usual ±11% swing.</p></section>')
+    pgrjs=('<script>document.addEventListener("DOMContentLoaded",function(){var a=document.getElementById("pgrapp"),D='+data+';if(!a)return;new IntersectionObserver(function(e,o){if(e.some(function(x){return x.isIntersecting})){o.disconnect();window.__pogInit("pgrapp",D)}}).observe(a)});</script>')
+_build_pgr()
+_sgl='''<p class="small" style="margin:0 0 8px">The whole period at a glance: <a href="#seasongrid" onclick="var b=document.querySelector('.tabs button[data-t=season]');if(b)b.click();if(window.__sub)window.__sub('slg');return false">Season → Lineup grid →</a></p>'''
+startsit_pane=(MUCSS+(f'''<section class="brief"><h2>Start/Sit</h2>{_sgl}<div class="ssper" data-p="{PER[0]}">{_s0[0]}</div>{f'<div class="ssper" data-p="{PER[1]}" hidden>{_s1[0]}</div>' if len(PER)>1 else ''}
 <div class="ssnav" data-first="{_first.isoformat() if _first else ""}" role="group" aria-label="Pick a day">{_nav}</div></section>
 <section>{"".join(h for _,h in _pan)}</section>
 <section class="brief ssper" data-p="{PER[0]}"><h3 style="margin-top:0">P{PER[0]} notes</h3>{_s0[1]}</section>{f'<section class="brief ssper" data-p="{PER[1]}" hidden><h3 style="margin-top:0">P{PER[1]} notes</h3>{_s1[1]}</section>' if len(PER)>1 and _s1[1] else ''}''' if _pan else '<p class="muted">No upcoming games found.</p>')
@@ -2781,7 +3148,10 @@ _throws=''.join(f'<tr><td><b>{html.escape(short(n))}</b> <span class="tm">{INFO[
 _thfoot=('<tr class="thfoot"><td>Empty slots<small>streamers can fill</small></td>'
          f'<td><b>{sum(_THE.values())}</b></td><td class="num">{sum(_THE[p] for p in REG)}</td><td class="num">{sum(_THE[p] for p in PO)}</td><td colspan="3"></td>'
          +''.join(f'<td class="{"thx" if not _THE[p] else ("bad" if _THE[p]>=5 else "")}">{_THE[p] or "—"}</td>' for p in PER)+'</tr>')
-_thhead=''.join(f'<th class="{"po" if p>=22 else ""}">P{p}<small>{len(THIN.get(p,[]))} thin</small></th>' for p in PER)
+def _popp(p):   # who you play in period p, in words; playoff opponents aren't set yet, so those show the round
+    if p>21: return RND[p].split(' · ')[0]
+    k=okey(p); return 'vs '+dname(tkey(k) if k else OPP[p-1].lstrip('@'))
+_thhead=''.join(f'<th class="{"po" if p>=22 else ""}">P{p}<small class="thop">{html.escape(_popp(p))}</small><small>{len(THIN.get(p,[]))} thin</small></th>' for p in PER)
 _thtop=max(R,key=lambda n:sum(_thn[n])) if R else None
 _thkeys=(f'<div class="thkeys"><div class="thk"><span>Thin days left</span><b>{_THT}</b><small>{_THR} regular season · {_THP} playoffs</small></div>'
          f'<div class="thk"><span>Empty lineup slots</span><b>{sum(_THE.values())}</b><small>on those days{f" · {_THZ} with none of your players" if _THZ else ""}</small></div>'
@@ -2792,7 +3162,7 @@ thin_pane=(f'''<section><h2>Thin days · who covers them</h2>
 {_thkeys}
 <div class="scroll"><table class="thintab"><thead><tr><th>Player</th><th>Thin days covered</th><th>Reg. season</th><th>Playoffs</th><th>Games left</th><th>On thin days</th><th>Thin-day pts</th>{_thhead}</tr></thead><tbody>{_throws}</tbody><tfoot>{_thfoot}</tfoot></table></div>
 <p class="small"><b>Thin days covered</b> = all the thin days he plays this season (regular season + playoffs); the bar is his share of all {_THT}. <b>2</b>/3 = he plays 2 of that period&#39;s 3 thin days, listed under the number; green = he plays all of them. <b>On thin days</b> = the share of his remaining games that fall on thin days, where he&#39;s a guaranteed start (green = well above your roster&#39;s average of {_THA*100:.0f}%). <b>Thin-day pts</b> ≈ thin days covered × his CBS FP/G: the points you&#39;d lose on those days without him. <b>Empty slots</b> = lineup spots nobody on your roster fills on thin days (red = 5 or more in a period): those are what a pickup with games on your thin days can add (Waivers → Streaming). Players are sorted by thin days covered. Low numbers mean his games fall on the same nights as your other players&#39;. Injured players count from their return date. {"Current period counts from today." if CUR in PER else ""}</p></section>'''
- +'<style>.thintab{min-width:max-content}.thintab th,.thintab td{text-align:center;vertical-align:top}.thintab th:first-child,.thintab td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:1;white-space:nowrap}.thintab th small{display:block;font:600 .62rem var(--mono);color:var(--muted);text-transform:none;letter-spacing:0}.thintab th.po{color:var(--accent)}.thc,.ths{min-width:62px}.thc span{display:block;font:500 .68rem var(--mono);color:var(--muted);line-height:1.3;margin-top:2px;max-width:9em;margin-inline:auto}.thintab small{color:var(--muted)}.thc.all,.ths.all{background:var(--okbg)}.thc.all b,.ths.all b{color:var(--ok)}.thc.none b{color:var(--muted);font-weight:400}.thx{color:var(--muted)}'
+ +'<style>.thintab{min-width:max-content}.thintab th,.thintab td{text-align:center;vertical-align:top}.thintab th:first-child,.thintab td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:1;white-space:nowrap}.thintab th small{display:block;font:600 .62rem var(--mono);color:var(--muted);text-transform:none;letter-spacing:0}.thintab th.po{color:var(--accent)}.thintab th small.thop{font:700 .68rem var(--body);color:var(--fg);white-space:normal;max-width:92px;margin:1px auto 2px;line-height:1.2}.thc,.ths{min-width:62px}.thc span{display:block;font:500 .68rem var(--mono);color:var(--muted);line-height:1.3;margin-top:2px;max-width:9em;margin-inline:auto}.thintab small{color:var(--muted)}.thc.all,.ths.all{background:var(--okbg)}.thc.all b,.ths.all b{color:var(--ok)}.thc.none b{color:var(--muted);font-weight:400}.thx{color:var(--muted)}'
  '.thtot{min-width:118px}.thtot b{font:700 1.25rem var(--display);font-variant-numeric:tabular-nums}.thtot small{display:block;font:600 .66rem var(--mono)}.thbar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin:2px 0 4px}.thbar span{display:block;height:100%;background:var(--accent);border-radius:3px}'
  '.thsh small{display:block;font:500 .66rem var(--mono)}.thsh.hi b{color:var(--ok)}.thfoot td{border-top:2px solid var(--line);font-weight:600;background:var(--bg)}.thfoot td:first-child{background:var(--bg)}.thfoot td small{display:block;font:500 .64rem var(--mono);color:var(--muted)}.thfoot td.bad{color:var(--bad)}'
  '.thkeys{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 10px}.thk{flex:1 1 160px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:0}.thk span{display:block;font:600 .66rem var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.thk b{display:block;font:700 1.6rem var(--display);line-height:1.15;overflow-wrap:anywhere}.thk small{font-size:.78rem;color:var(--muted)}</style>') if R else '<p class="muted">No roster yet.</p>'
@@ -2809,7 +3179,7 @@ def _pgp(n,t,s):   # one player for the browser: short name, positions, team, el
             'g':[_PGIX[d] for d in _PGDAYS if d in G[t] and not (n in out and d<out[n]) and not sits(n,t,d)]}
 _PGDATA={'days':[[period(d),d.strftime('%a %b %-d'),d.strftime('%a %-m/%-d'),ngames(d),*gtier(ngames(d))] for d in _PGDAYS],
          'pl':{**{n:_pgp(n,*R[n]) for n in R},**{n:_pgp(n,*FA[n]) for n in FA if FA[n][1] and (healthy(n) or n in watch)}},
-         'ra':_RA,'ir':IRP,'irw':{n:_irw(n) for n in IRP},'drops':[d for d in DROPS if d in _RA],'stream':STREAM,
+         'opp':{p:_popp(p) for p in PER},'ra':_RA,'ir':IRP,'irw':{n:_irw(n) for n in IRP},'drops':[d for d in DROPS if d in _RA],'stream':STREAM,
          'fa':[n for n in FA if healthy(n) and FA[n][1]],'wl':watch}
 _PGSEL=('<div class="pgsel"><label class="dropsel">If I drop <select id="pgdrop"><option value="">Nobody</option>'
         +''.join(f'<option value="{html.escape(d)}">{html.escape(short(d))} ({INFO[d]["pos"]}{", stream slot" if d==STREAM else ""})</option>' for d in _PGDATA['drops'])+'</select></label>'
@@ -2880,15 +3250,15 @@ var rows=ids.map(function(i){return [i,XF.gap[i],0]});if(add)Object.keys(XP.gap)
 function row(r_){var i=r_[0],g=r_[1],f=r_[2],d=DAYS[i],nw="";
 if(!f&&add&&!XP.gap[i])nw=' <span class="tag warn">new with '+esc(P[add].s)+'</span>';else if(!f&&mv.length&&!X0.gap[i])nw=' <span class="tag warn">new</span>';
 var fx=irl.filter(function(n){return IRF[n][i]}).map(function(n){return '<span class="tag ok">'+esc(D.irw[n])+'</span>'}).join(" ")||'<span class="thx">—</span>';
-return '<tr data-p="'+d[0]+'" class="'+(d[0]>=22?"po":"")+(f?" pgfixed":"")+'"><td>P'+d[0]+'</td><td><b>'+d[1]+'</b>'+nw+'</td><td class="num">'+g[0]+'</td><td class="num"><b>'+g[1]+'</b><small>/5</small></td><td><span class="tag bad">no '+g[3]+'</span>'+(f?'<span class="tag ok">✓ filled by '+esc(P[add].s)+'</span>':"")+'</td><td><span class="gt '+d[4]+'">'+d[5]+'</span> <small>'+d[3]+' games</small></td>'+(irl.length?'<td>'+(f?"":fx)+'</td>':"")+'</tr>'}
-h+=rows.length?'<div class="scroll"><table class="pgtab"><thead><tr><th>P</th><th>Night</th><th>Playing</th><th>Usable</th><th>Missing</th><th>NBA slate</th>'+(irl.length?"<th>Fixed if activated</th>":"")+'</tr></thead><tbody>'+rows.map(row).join("")+'</tbody></table></div>':'<p class="muted">None: every night 5+ of your players play, they can fill all 5 slots.</p>';
+return '<tr data-p="'+d[0]+'" class="'+(d[0]>=22?"po":"")+(f?" pgfixed":"")+'"><td>P'+d[0]+'<small class="pgop">'+esc(D.opp[d[0]]||"")+'</small></td><td><b>'+d[1]+'</b>'+nw+'</td><td class="num">'+g[0]+'</td><td class="num"><b>'+g[1]+'</b><small>/5</small></td><td><span class="tag bad">no '+g[3]+'</span>'+(f?'<span class="tag ok">✓ filled by '+esc(P[add].s)+'</span>':"")+'</td><td><span class="gt '+d[4]+'">'+d[5]+'</span> <small>'+d[3]+' games</small></td>'+(irl.length?'<td>'+(f?"":fx)+'</td>':"")+'</tr>'}
+h+=rows.length?'<div class="scroll"><table class="pgtab"><thead><tr><th>P · opponent</th><th>Night</th><th>Playing</th><th>Usable</th><th>Missing</th><th>NBA slate</th>'+(irl.length?"<th>Fixed if activated</th>":"")+'</tr></thead><tbody>'+rows.map(row).join("")+'</tbody></table></div>':'<p class="muted">None: every night 5+ of your players play, they can fill all 5 slots.</p>';
 // thin days the move changes: nights under 5 playing (before or after) where the lineup slots you can fill go up or down; gap nights are in the table above
 if(mv.length){var ins=fin.filter(function(n){return D.ra.indexOf(n)<0}),outs=D.ra.filter(function(n){return fin.indexOf(n)<0}),mvs=ins.concat(outs),tc=[],tg=0,tl=0,tsame=0;
 for(var i=0;i<DAYS.length;i++){var a=X0.us[i],b=XF.us[i];if(X0.ks[i]>=5&&XF.ks[i]>=5)continue;if(a===b){if(mvs.some(function(n){return GS[n][i]})){tsame++;tc.push(i)}continue}if(b>a)tg++;else tl++;tc.push(i)}
 h+='<h3 class="sh">Thin days this move changes</h3><p class="small" style="margin:0 0 6px">Nights fewer than 5 of your players play (before or after the move) where the lineup slots you can fill change: <i class="pgb">'+tg+' better</i> · <i class="pgw">'+tl+' worse</i>'+(tsame?' · '+tsame+' no change (the player coming in and the one going out both play)':'')+'.</p>';
-h+=tc.length?'<div class="scroll"><table class="pgtab"><thead><tr><th>P</th><th>Night</th><th>Playing</th><th>Usable</th><th>Why</th><th>NBA slate</th></tr></thead><tbody>'+tc.map(function(i){var d=DAYS[i],a=X0.us[i],b=XF.us[i],up=b>a,eq=a===b,
+h+=tc.length?'<div class="scroll"><table class="pgtab"><thead><tr><th>P · opponent</th><th>Night</th><th>Playing</th><th>Usable</th><th>Why</th><th>NBA slate</th></tr></thead><tbody>'+tc.map(function(i){var d=DAYS[i],a=X0.us[i],b=XF.us[i],up=b>a,eq=a===b,
 who=ins.filter(function(n){return GS[n][i]}).map(function(n){return '<span class="tag ok">+ '+esc(P[n].s)+' plays</span>'}).concat(outs.filter(function(n){return GS[n][i]}).map(function(n){return '<span class="tag bad">− '+esc(P[n].s)+'&#39;s game lost</span>'})).join(" ");
-return '<tr data-p="'+d[0]+'" class="'+(d[0]>=22?"po ":"")+(eq?"pgtheq":(up?"pgthup":"pgthdn"))+'"><td>P'+d[0]+'</td><td><b>'+d[1]+'</b></td><td class="num">'+X0.ks[i]+' → '+XF.ks[i]+'</td><td class="num"><b>'+a+' → '+b+'</b><small>/5</small> <i class="pgpill'+(eq?"":(up?" good":" bad"))+'">'+(eq?"±0":(up?"+":"−")+Math.abs(b-a))+'</i></td><td>'+who+'</td><td><span class="gt '+d[4]+'">'+d[5]+'</span> <small>'+d[3]+' games</small></td></tr>'}).join("")+'</tbody></table></div>':'<p class="muted">No thin day changes with this move.</p>'}
+return '<tr data-p="'+d[0]+'" class="'+(d[0]>=22?"po ":"")+(eq?"pgtheq":(up?"pgthup":"pgthdn"))+'"><td>P'+d[0]+'<small class="pgop">'+esc(D.opp[d[0]]||"")+'</small></td><td><b>'+d[1]+'</b></td><td class="num">'+X0.ks[i]+' → '+XF.ks[i]+'</td><td class="num"><b>'+a+' → '+b+'</b><small>/5</small> <i class="pgpill'+(eq?"":(up?" good":" bad"))+'">'+(eq?"±0":(up?"+":"−")+Math.abs(b-a))+'</i></td><td>'+who+'</td><td><span class="gt '+d[4]+'">'+d[5]+'</span> <small>'+d[3]+' games</small></td></tr>'}).join("")+'</tbody></table></div>':'<p class="muted">No thin day changes with this move.</p>'}
 if(fa.length)h+='<h3 class="sh">Free agents who fill these gaps</h3><div class="scroll"><table class="pgtab"><thead><tr><th>Free agent</th><th>FP/G</th><th>Gap nights he fills</th><th>Nights</th></tr></thead><tbody>'
 +fa.map(function(x){var n=x[1],q=P[n],ds=Object.keys(XP.gap).map(Number).sort(function(a,b){return a-b}).filter(function(i){return plays(n,i,XP.gap[i][2])});
 return '<tr'+(n===add?' class="pgon"':'')+'><td><b>'+esc(q.s)+'</b> <span class="nbat" data-t="'+esc(q.t)+'">'+esc(q.t)+'</span> <span class="tm">'+esc(q.pos)+'</span></td><td class="num">'+q.fp.toFixed(1)+'</td><td class="num"><b>'+x[0]+'</b><small>/'+ng+'</small></td><td class="pgd">'+ds.slice(0,6).map(function(i){return DAYS[i][2]}).join(" · ")+(ds.length>6?" …":"")+'</td></tr>'}).join("")+'</tbody></table></div>';
@@ -2907,7 +3277,7 @@ _pgsec=(f'''<section><h2>Position gaps · nights you can&#39;t fill 5</h2>
  +'<style>.pgtab th,.pgtab td{vertical-align:middle}.pgtab small{color:var(--muted);font:500 .68rem var(--mono)}.pgtab tr.po{background:var(--pobg)}.pgd{font:500 .72rem var(--mono);color:var(--muted)}.thk.thir{border-left:4px solid var(--ok)}.thk.thdr{border-left:4px solid var(--warn)}.thk.pgm-bad{border-left-color:var(--bad);background:var(--badbg)}.thk.pgm-good{border-left-color:var(--ok);background:var(--okbg)}.thk.pgm-bad>b{color:var(--bad)}.thk.pgm-good>b{color:var(--ok)}'
  '.thk i{font-style:normal}.pgpill{display:inline-block;white-space:nowrap;vertical-align:middle;font:700 .68rem var(--mono);letter-spacing:.02em;padding:2px 8px;border-radius:999px;background:var(--line);color:var(--fg);margin-left:6px}.pgpill.bad{background:var(--bad);color:#fff}.pgpill.good{background:var(--ok);color:#fff}.pgw{color:var(--bad);font-weight:700}.pgb{color:var(--ok);font-weight:700}.pgv{display:grid;gap:10px;min-width:0}'
  '.pgsel{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 8px}.pgsel .dropsel{margin:0}.pgsel select:disabled{opacity:.5}.pgwarn{margin:0;padding:8px 12px;border-radius:8px;background:var(--warnbg);color:var(--fg);font-size:.88rem}'
- '.pgtab tr.pfirst:not(:first-child) td{border-top:2px solid color-mix(in srgb,var(--fg) 35%,transparent)}.pgtab tr.prest td:first-child{color:transparent}'
+ '.pgtab .pgop{display:block;max-width:120px;font:600 .72rem var(--body);color:var(--fg);white-space:normal;line-height:1.2}.pgtab tr.prest td:first-child .pgop{display:none}.pgtab tr.pfirst:not(:first-child) td{border-top:2px solid color-mix(in srgb,var(--fg) 35%,transparent)}.pgtab tr.prest td:first-child{color:transparent}'
  '.pgtab tr.pfirst td:first-child{font-weight:700}.pgtab tr.pbodd td:first-child{box-shadow:inset 4px 0 0 color-mix(in srgb,var(--fg) 70%,transparent)}.pgtab tr.pbeven td:first-child{box-shadow:inset 4px 0 0 color-mix(in srgb,var(--muted) 35%,transparent)}'
  'tr.pgthup td{background:var(--okbg)}tr.pgthdn td{background:var(--badbg)}tr.pgtheq td{color:var(--muted)}tr.pgfixed td{background:var(--okbg)}tr.pgfixed .tag.bad{text-decoration:line-through;opacity:.55;margin-right:4px}tr.pgon td{background:var(--okbg)}tr.pgon td:first-child{box-shadow:inset 4px 0 0 #2563eb}</style>')
 if R: thin_pane=_pgsec+thin_pane   # position gaps first: the priority on this page
@@ -3200,9 +3570,9 @@ if(i<s.length)f.appendChild(document.createTextNode(s.slice(i)));t.parentNode.re
 function mark(r){if(!r||r.nodeType!==1||r.closest(NOSCAN))return;var l=r.tagName==="B"?[r]:r.querySelectorAll("b");[].forEach.call(l,function(b){if(!b.closest(NOSCAN)&&D.hasOwnProperty(b.textContent.trim()))b.classList.add("pcn")});scan(r);tags(r)}
 function ijl(x){var k=x.ij[0];return k==="out"?[x.ir?"🚑 OUT · on IR":"🚑 OUT · IR eligible","injt"]:(k==="gtd"?[x.ir?"⚠️ GTD · not IR eligible":"🚑 GTD","injt gtd"+(x.ir?" irno":"")]:["⚠️ Not injured · not IR eligible","injt gtd irno"])}
 function ijb(x){var l=ijl(x);return '<span class="'+l[1]+'" title="'+esc("CBS: "+x.ij[1])+'">'+l[0]+'</span>'}
-function tags(r){var l=[].slice.call(r.querySelectorAll(".pcn"));if(r.classList.contains("pcn"))l.push(r);l.forEach(function(e){var x=D[e.textContent.trim()];if(!x||!x.ij||e.dataset.ij||e.parentElement.closest(".tag,.small,.gt,.brief,.irban,h1,h2,h3,button,a,select,option,.dropname,#pcard"))return;e.dataset.ij="1";e.insertAdjacentHTML("afterend"," "+ijb(x))})}
+function tags(r){var l=[].slice.call(r.querySelectorAll(".pcn"));if(r.classList.contains("pcn"))l.push(r);l.forEach(function(e){var x=D[e.textContent.trim()];if(!x||!x.ij||e.dataset.ij||e.parentElement.closest(".tag,.small,.gt,.brief,.irban,h1,h2,h3,button,a,select,option,.dropname,#pcard,#pogrid,#seasongrid"))return;e.dataset.ij="1";e.insertAdjacentHTML("afterend"," "+ijb(x))})}
 document.addEventListener("DOMContentLoaded",function(){mark(document.body);new MutationObserver(function(ms){var s=new Set();ms.forEach(function(m){[].forEach.call(m.addedNodes,function(x){s.add(x.nodeType===1?x:x.parentNode)})});s.forEach(mark)}).observe(document.body,{childList:true,subtree:true})});
-function open(n){var x=D[n];if(!x)return;var ini=n.split(" ").slice(0,2).map(function(w){return w.charAt(0)}).join("").toUpperCase();
+var CUR="";function open(n){var x=D[n];if(!x)return;CUR=n;var ini=n.split(" ").slice(0,2).map(function(w){return w.charAt(0)}).join("").toUpperCase();
 var h='<button class="x" type="button" aria-label="Close">✕</button><div class="pch"><span class="pcf" aria-hidden="true">'+esc(ini)+(x.h?'<img src="https://a.espncdn.com/i/headshots/nba/players/full/'+x.h+'.png" alt="" onerror="this.remove()">':'')+'</span><div><h2>'+esc(n)+'</h2><p><span class="nbat" data-t="'+esc(x.t)+'">'+esc(x.t)+'</span> <span class="tm">'+esc(x.p)+'</span>'+(x.ij?' '+ijb(x):(x.ir?' · <span class="tag bad">IR</span>':''))+(x.out?' · out until '+esc(x.out):'')+(x.rest?' · 🛌 rests B2Bs':'')+'</p>'+(x.ij?'<p class="small pcinj">'+esc(x.ij[1])+' <span class="muted">(CBS, last nightly read)</span></p>':'')+'<p class="pcown">'+(x.o==='FA'?'<span class="pcfa">Free agent</span>':(x.ol!=null?'<img data-lg="'+x.ol+'" width="24" height="24" alt="" class="mlogo">':'')+'<span>Rostered by <b>'+esc(x.on)+'</b></span>'+(x.o==='yours'?'<span class="yours">★ Yours</span>':''))+'</p><p class="pcact"><button type="button" class="wq" data-n="'+esc(x.N)+'">+ Watch</button>'+fbt(x.N)+'</p>'+(x.bio?'<p class="small pcbio">'+[x.bio[0]?'#'+esc(x.bio[0]):'',x.bio[1]?esc(x.bio[1]):'',x.bio[2]?esc(x.bio[2])+' lbs':'',x.bio[3]!==''?esc(x.bio[3])+' years old':''].filter(Boolean).join(' · ')+(x.bio[4]||x.bio[5]?'<br>'+[x.bio[4]?esc(x.bio[4]):'',x.bio[5]?'Drafted '+esc(x.bio[5]):'Undrafted'].filter(Boolean).join(' · '):'')+'</p>':'')+'</div></div>';
 h+='<div class="kv"><span>CBS FP/G</span><b>'+(x.fp?x.fp.toFixed(1):'—')+(x.yf!=null?' <span class="small" style="font-weight:400">· your FP/G '+x.yf.toFixed(1)+' (used for projections)</span>':'')+'</b><span>CBS projected games</span><b>'+Math.round(x.gp)+' <span class="small" style="font-weight:400">('+Math.min(100,Math.round(x.gp/78.5*100))+'% of a full season: his gains are scaled by it)</span></b>'+(x.ro?'<span>CBS rostered</span><b>'+esc(x.ro)+'</b>':'')+''+(x.u?'<span>Usage rate</span><b>'+x.u[0]+'% season · '+x.u[1]+'% last 3</b>':'')+'</div>'+(x.bs?'<p class="pcbs '+x.bs[0]+'"><b>'+(x.bs[0]==='sell'||x.bs[0]==='fade'?'📈 ':'📉 ')+esc(x.bs[1])+'</b> · '+esc(x.bs[2].join(' · '))+'</p>':'');
 if(x.st&&x.st.length)h+='<h3>Stats</h3><div class="scroll"><table class="pcst" data-xs><thead><tr>'+['Season','G','MPG','FG','FG%','FT','FT%','3PT','3P%','RPG','APG','SPG','TPG','BPG','PPG','FPTS/G','FPTS'].map(function(c){return '<th>'+c+'</th>'}).join('')+'</tr></thead><tbody>'+x.st.map(function(r){var cur=r[0]==='2026-27';return '<tr'+(cur?' class="cur"':'')+'>'+r.map(function(v,j){return '<td'+(j===15?' class="fp'+(cur?hb(v):'')+'"':j===16?' class="fp"':'')+'>'+esc(v)+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div><p class="small" style="margin:4px 0 0">FG, FT and 3PT are makes. FPTS = BBL points with the slot bonus, as on CBS&#39;s game log. On pace = his rate over 82 games at his team&#39;s games so far. Past seasons: ESPN regular-season totals (a traded season is both teams combined); avg = per season over the last 3.</p><p class="small fhleg" style="margin:6px 0 0">This season&#39;s FPTS/G colour: 0–29 plain · <span class="fh2">30–39</span> <span class="fh3">40–49</span> <span class="fh4">50–59</span> <span class="fh5">60+</span></p>';
@@ -3249,7 +3619,7 @@ function favs(){try{return JSON.parse(localStorage.getItem("bbl-wfav")||"{}")||{
 function fbt(n){var o=!!favs()[n];return '<button type="button" class="pcfav'+(o?' on':'')+'" data-n="'+esc(n)+'" aria-pressed="'+o+'" title="'+(o?'Pinned to the top of your Watchlist. Click to unpin':'Pin him to the top of your Watchlist (adds him to it if needed)')+'">'+(o?'★ Favourite':'☆ Favourite')+'</button>'}
 box.addEventListener("click",function(e){var b=e.target.closest(".pcfav");if(!b)return;var n=b.dataset.n,F=favs();if(F[n])delete F[n];else F[n]=1;try{localStorage.setItem("bbl-wfav",JSON.stringify(F))}catch(er){}
 b.outerHTML=fbt(n);document.dispatchEvent(new CustomEvent("bbl-wfav",{detail:"pc"}));var w=box.querySelector(".wq");if(F[n]&&w&&!w.disabled&&!w.classList.contains("on"))w.click()});
-document.addEventListener("click",function(e){var b=e.target.closest(".pcn");if(b&&D[b.textContent.trim()]){e.preventDefault();open(b.textContent.trim());return}if(!box.hidden&&(e.target.closest(".x")||!e.target.closest("#pcard")))close()});
+document.addEventListener("click",function(e){var b=e.target.closest(".pcn");if(b&&D[b.textContent.trim()]){e.preventDefault();var nm=b.textContent.trim();if(!box.hidden&&CUR===nm)close();else open(nm);return}if(!box.hidden&&(e.target.closest(".x")||!e.target.closest("#pcard")))close()});
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!box.hidden)close()});box.addEventListener("click",function(e){var b=e.target.closest(".pcglall");if(!b)return;[].forEach.call(box.querySelectorAll(".pcgl tr[hidden]"),function(r){r.hidden=false});b.remove()});window.__pcard=open;window.__pcnames=D})();</script>'''
           .replace('__PCD__',json.dumps(D,separators=(',',':'),ensure_ascii=False).replace('</','<\\/')).replace('__PCC__',json.dumps([[c,x] for (c,_),x in zip(cols,CX)])))
 _build_pcard()
@@ -3279,11 +3649,12 @@ body=f'''{headtxt}
 </div>
 <div class="pane" id="playoffs" role="tabpanel" hidden>{posec}</div>
 <div class="pane" id="season" role="tabpanel" hidden>
-<nav class="subtabs" data-g="season" aria-label="Season views"><button type="button" data-s="sov" aria-pressed="true">Overview</button><button type="button" data-s="sthin" aria-pressed="false">Thin days</button><button type="button" data-s="smu" aria-pressed="false">H2H schedule</button><button type="button" data-s="srep" aria-pressed="false">Reports</button><button type="button" data-s="stop" aria-pressed="false">Top 150</button><button type="button" data-s="sprz" aria-pressed="false">Side prizes</button><button type="button" data-s="sben" aria-pressed="false">Bench</button><button type="button" data-s="sdraft" aria-pressed="false">Draft results</button></nav>
+<nav class="subtabs" data-g="season" aria-label="Season views"><button type="button" data-s="sov" aria-pressed="true">Overview</button><button type="button" data-s="slg" aria-pressed="false">Lineup grid</button><button type="button" data-s="sthin" aria-pressed="false">Thin days</button><button type="button" data-s="smu" aria-pressed="false">H2H schedule</button><button type="button" data-s="srep" aria-pressed="false">Reports</button><button type="button" data-s="stop" aria-pressed="false">Top 150</button><button type="button" data-s="sprz" aria-pressed="false">Side prizes</button><button type="button" data-s="sben" aria-pressed="false">Bench</button><button type="button" data-s="sdraft" aria-pressed="false">Draft results</button></nav>
 <div id="sprz" class="subpane" hidden>{prizesec}
 {PLAN}</div>
 <div id="sben" class="subpane" hidden>{benchsec}</div>
 <div id="sdraft" class="subpane" hidden>{draftsec or '<section><h2>Draft results</h2><p class="muted">No draft data saved yet.</p></section>'}</div>
+<div id="slg" class="subpane" hidden>{pgrhtml}{pgrjs}</div>
 <div id="sthin" class="subpane" hidden>{thin_pane}</div>
 <div id="smu" class="subpane" hidden>{h2h_pane}</div>
 <div id="stop" class="subpane" hidden>{top150_pane}</div>
